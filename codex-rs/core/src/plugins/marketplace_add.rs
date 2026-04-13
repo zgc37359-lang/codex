@@ -134,10 +134,17 @@ where
     let destination = install_root.join(safe_marketplace_dir_name(&marketplace_name)?);
     ensure_marketplace_destination_is_inside_install_root(&install_root, &destination)?;
     if destination.exists() {
-        return Err(MarketplaceAddError::InvalidRequest(format!(
-            "marketplace '{marketplace_name}' is already added from a different source; remove it before adding {}",
-            source.display()
-        )));
+        validate_marketplace_source_root(&destination)?;
+        return Ok(MarketplaceAddOutcome {
+            marketplace_name,
+            source_display: source.display(),
+            installed_root: AbsolutePathBuf::try_from(destination).map_err(|err| {
+                MarketplaceAddError::Internal(format!(
+                    "failed to resolve installed marketplace root: {err}"
+                ))
+            })?,
+            already_added: true,
+        });
     }
 
     replace_marketplace_root(&staged_root, &destination).map_err(|err| {
@@ -211,6 +218,76 @@ mod tests {
         assert!(config.contains("[marketplaces.debug]"));
         assert!(config.contains("source_type = \"git\""));
         assert!(config.contains("source = \"https://github.com/owner/repo.git\""));
+        Ok(())
+    }
+
+    #[test]
+    fn add_marketplace_sync_treats_existing_marketplace_name_as_already_added() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let first_source_root = TempDir::new()?;
+        let second_source_root = TempDir::new()?;
+        write_marketplace_source(first_source_root.path(), "first source")?;
+        write_marketplace_source(second_source_root.path(), "second source")?;
+
+        let first_result = add_marketplace_sync_with_cloner(
+            codex_home.path(),
+            MarketplaceAddRequest {
+                source: "https://github.com/owner/first.git".to_string(),
+                ref_name: None,
+                sparse_paths: Vec::new(),
+            },
+            |url, _ref_name, _sparse_paths, destination| {
+                let source_root = match url {
+                    "https://github.com/owner/first.git" => first_source_root.path(),
+                    "https://github.com/owner/second.git" => second_source_root.path(),
+                    other => panic!("unexpected url {other}"),
+                };
+                copy_dir_all(source_root, destination)
+                    .map_err(|err| MarketplaceAddError::Internal(err.to_string()))
+            },
+        )?;
+
+        let second_result = add_marketplace_sync_with_cloner(
+            codex_home.path(),
+            MarketplaceAddRequest {
+                source: "https://github.com/owner/second.git".to_string(),
+                ref_name: None,
+                sparse_paths: Vec::new(),
+            },
+            |url, _ref_name, _sparse_paths, destination| {
+                let source_root = match url {
+                    "https://github.com/owner/first.git" => first_source_root.path(),
+                    "https://github.com/owner/second.git" => second_source_root.path(),
+                    other => panic!("unexpected url {other}"),
+                };
+                copy_dir_all(source_root, destination)
+                    .map_err(|err| MarketplaceAddError::Internal(err.to_string()))
+            },
+        )?;
+
+        let installed_root = marketplace_install_root(codex_home.path()).join("debug");
+        assert_eq!(
+            first_result.installed_root.as_path(),
+            installed_root.as_path()
+        );
+        assert_eq!(
+            second_result.installed_root.as_path(),
+            installed_root.as_path()
+        );
+        assert_eq!(second_result.marketplace_name, "debug");
+        assert_eq!(
+            second_result.source_display,
+            "https://github.com/owner/second.git"
+        );
+        assert!(second_result.already_added);
+        assert_eq!(
+            fs::read_to_string(installed_root.join("plugins/sample/marker.txt"))?,
+            "first source"
+        );
+
+        let config = fs::read_to_string(codex_home.path().join(codex_config::CONFIG_TOML_FILE))?;
+        assert!(config.contains("source = \"https://github.com/owner/first.git\""));
+        assert!(!config.contains("source = \"https://github.com/owner/second.git\""));
         Ok(())
     }
 

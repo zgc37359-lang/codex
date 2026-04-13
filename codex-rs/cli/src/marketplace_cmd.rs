@@ -80,8 +80,8 @@ async fn run_add(args: AddMarketplaceArgs) -> Result<()> {
 
     if outcome.already_added {
         println!(
-            "Marketplace `{}` is already added from {}.",
-            outcome.marketplace_name, outcome.source_display
+            "Marketplace `{}` is already added.",
+            outcome.marketplace_name
         );
     } else {
         println!(

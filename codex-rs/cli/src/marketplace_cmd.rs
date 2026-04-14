@@ -139,15 +139,12 @@ fn print_upgrade_outcome(
         println!("No configured Git marketplaces to upgrade.");
     } else if outcome.upgraded_roots.is_empty() {
         if marketplace_name.is_some() {
-            println!("Marketplace `{}` is already up to date.", selection_label);
+            println!("Marketplace `{selection_label}` is already up to date.");
         } else {
             println!("All configured Git marketplaces are already up to date.");
         }
     } else if marketplace_name.is_some() {
-        println!(
-            "Upgraded marketplace `{}` to the latest configured revision.",
-            selection_label
-        );
+        println!("Upgraded marketplace `{selection_label}` to the latest configured revision.");
         for root in &outcome.upgraded_roots {
             println!("Installed marketplace root: {}", root.display());
         }

@@ -1085,6 +1085,7 @@ impl TurnContext {
             approval_policy: self.approval_policy.value(),
             sandbox_policy: self.sandbox_policy.get().clone(),
             network: self.turn_context_network_item(),
+            file_system_sandbox_policy: Some(self.file_system_sandbox_policy.clone()),
             model: self.model_info.slug.clone(),
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
@@ -1256,6 +1257,12 @@ impl SessionConfiguration {
         let mut sandbox_policy_changed = false;
         if let Some(sandbox_policy) = updates.sandbox_policy.clone() {
             next_configuration.sandbox_policy.set(sandbox_policy)?;
+            next_configuration.file_system_sandbox_policy =
+                FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
+                    next_configuration.sandbox_policy.get(),
+                    &next_configuration.cwd,
+                    &next_configuration.file_system_sandbox_policy,
+                );
             next_configuration.network_sandbox_policy =
                 NetworkSandboxPolicy::from(next_configuration.sandbox_policy.get());
             sandbox_policy_changed = true;

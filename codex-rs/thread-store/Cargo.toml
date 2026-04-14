@@ -24,9 +24,6 @@ thiserror = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 
-[build-dependencies]
-tonic-prost-build = { workspace = true }
-
 [dev-dependencies]
 codex-state = { workspace = true }
 pretty_assertions = { workspace = true }

@@ -34,14 +34,8 @@ use crate::ThreadStoreResult;
 use crate::UpdateThreadMetadataParams;
 use proto::thread_store_client::ThreadStoreClient;
 
-mod proto {
-    // The generated code references these crates; keep explicit imports so dependency hygiene
-    // checks can see that they are intentionally required by `include_proto!`.
-    use prost as _;
-    use tonic_prost as _;
-
-    tonic::include_proto!("codex.thread_store.v1");
-}
+#[path = "proto/codex.thread_store.v1.rs"]
+mod proto;
 
 /// gRPC-backed [`ThreadStore`] implementation for deployments whose durable thread data lives
 /// outside the app-server process.

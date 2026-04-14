@@ -1218,17 +1218,17 @@ impl PluginsManager {
         Ok(outcome)
     }
 
-    pub fn maybe_start_non_curated_plugin_cache_refresh_for_roots(
+    pub fn maybe_start_non_curated_plugin_cache_refresh(
         self: &Arc<Self>,
         roots: &[AbsolutePathBuf],
     ) {
-        self.maybe_start_non_curated_plugin_cache_refresh_for_roots_with_mode(
+        self.schedule_non_curated_plugin_cache_refresh(
             roots,
             NonCuratedCacheRefreshMode::IfVersionChanged,
         );
     }
 
-    fn maybe_start_non_curated_plugin_cache_refresh_for_roots_with_mode(
+    fn schedule_non_curated_plugin_cache_refresh(
         self: &Arc<Self>,
         roots: &[AbsolutePathBuf],
         mode: NonCuratedCacheRefreshMode,

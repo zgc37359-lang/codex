@@ -1915,7 +1915,6 @@ dependencies = [
  "codex-git-utils",
  "codex-hooks",
  "codex-instructions",
- "codex-keyring-store",
  "codex-login",
  "codex-mcp",
  "codex-model-provider-info",

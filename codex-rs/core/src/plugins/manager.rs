@@ -1100,7 +1100,7 @@ impl PluginsManager {
     ) {
         if config.features.enabled(Feature::Plugins) {
             self.start_curated_repo_sync();
-            self.maybe_start_configured_marketplace_upgrade_for_config(config);
+            self.maybe_start_marketplace_auto_upgrade(config);
             start_startup_remote_plugin_sync_once(
                 Arc::clone(self),
                 self.codex_home.clone(),
@@ -1125,10 +1125,7 @@ impl PluginsManager {
         }
     }
 
-    pub fn maybe_start_configured_marketplace_upgrade_for_config(
-        self: &Arc<Self>,
-        config: &Config,
-    ) {
+    pub fn maybe_start_marketplace_auto_upgrade(self: &Arc<Self>, config: &Config) {
         if !config.features.enabled(Feature::Plugins) {
             return;
         }

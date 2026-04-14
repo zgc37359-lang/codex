@@ -11,7 +11,7 @@ const MARKETPLACE_INSTALL_METADATA_FILE: &str = ".codex-marketplace-install.json
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-struct ActivatedMarketplaceMetadata {
+struct InstalledMarketplaceMetadata {
     source_type: MarketplaceSourceType,
     source: String,
     ref_name: Option<String>,
@@ -19,16 +19,16 @@ struct ActivatedMarketplaceMetadata {
     revision: String,
 }
 
-pub(super) fn activated_marketplace_metadata_matches(
+pub(super) fn installed_marketplace_metadata_matches(
     root: &Path,
     marketplace: &ConfiguredGitMarketplace,
     revision: &str,
 ) -> bool {
-    let metadata = match std::fs::read_to_string(activated_marketplace_metadata_path(root)) {
+    let metadata = match std::fs::read_to_string(installed_marketplace_metadata_path(root)) {
         Ok(metadata) => metadata,
         Err(_) => return false,
     };
-    let metadata = match serde_json::from_str::<ActivatedMarketplaceMetadata>(&metadata) {
+    let metadata = match serde_json::from_str::<InstalledMarketplaceMetadata>(&metadata) {
         Ok(metadata) => metadata,
         Err(err) => {
             warn!(
@@ -39,18 +39,18 @@ pub(super) fn activated_marketplace_metadata_matches(
             return false;
         }
     };
-    metadata == activated_marketplace_metadata(marketplace, revision)
+    metadata == installed_marketplace_metadata(marketplace, revision)
 }
 
-pub(super) fn write_activated_marketplace_metadata(
+pub(super) fn write_installed_marketplace_metadata(
     root: &Path,
     marketplace: &ConfiguredGitMarketplace,
     revision: &str,
 ) -> Result<(), String> {
-    let metadata = activated_marketplace_metadata(marketplace, revision);
+    let metadata = installed_marketplace_metadata(marketplace, revision);
     let contents = serde_json::to_string_pretty(&metadata)
         .map_err(|err| format!("failed to serialize activated marketplace metadata: {err}"))?;
-    std::fs::write(activated_marketplace_metadata_path(root), contents)
+    std::fs::write(installed_marketplace_metadata_path(root), contents)
         .map_err(|err| format!("failed to write activated marketplace metadata: {err}"))
 }
 
@@ -149,11 +149,11 @@ pub(super) fn activate_marketplace_root(
     Ok(())
 }
 
-fn activated_marketplace_metadata(
+fn installed_marketplace_metadata(
     marketplace: &ConfiguredGitMarketplace,
     revision: &str,
-) -> ActivatedMarketplaceMetadata {
-    ActivatedMarketplaceMetadata {
+) -> InstalledMarketplaceMetadata {
+    InstalledMarketplaceMetadata {
         source_type: MarketplaceSourceType::Git,
         source: marketplace.source.clone(),
         ref_name: marketplace.ref_name.clone(),
@@ -162,6 +162,6 @@ fn activated_marketplace_metadata(
     }
 }
 
-fn activated_marketplace_metadata_path(root: &Path) -> PathBuf {
+fn installed_marketplace_metadata_path(root: &Path) -> PathBuf {
     root.join(MARKETPLACE_INSTALL_METADATA_FILE)
 }

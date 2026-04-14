@@ -2,8 +2,8 @@ mod activation;
 mod git;
 
 use self::activation::activate_marketplace_root;
-use self::activation::activated_marketplace_metadata_matches;
-use self::activation::write_activated_marketplace_metadata;
+use self::activation::installed_marketplace_metadata_matches;
+use self::activation::write_installed_marketplace_metadata;
 use self::git::clone_git_source;
 use self::git::git_remote_revision;
 use super::installed_marketplaces::marketplace_install_root;
@@ -173,7 +173,7 @@ fn upgrade_configured_git_marketplace(
         .join(".agents/plugins/marketplace.json")
         .is_file()
         && marketplace.last_revision.as_deref() == Some(remote_revision.as_str())
-        && activated_marketplace_metadata_matches(&destination, marketplace, &remote_revision)
+        && installed_marketplace_metadata_matches(&destination, marketplace, &remote_revision)
     {
         return Ok(None);
     }
@@ -210,7 +210,7 @@ fn upgrade_configured_git_marketplace(
             marketplace.name
         ));
     }
-    write_activated_marketplace_metadata(staged_dir.path(), marketplace, &activated_revision)?;
+    write_installed_marketplace_metadata(staged_dir.path(), marketplace, &activated_revision)?;
 
     let last_updated = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let update = MarketplaceConfigUpdate {
@@ -573,7 +573,7 @@ ref = "{ref_name}"
             sparse_paths: sparse_paths.to_vec(),
             last_revision: Some(revision.to_string()),
         };
-        write_activated_marketplace_metadata(root, &marketplace, revision)
+        write_installed_marketplace_metadata(root, &marketplace, revision)
             .expect("metadata should write");
     }
 

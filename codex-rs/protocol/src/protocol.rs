@@ -1299,14 +1299,15 @@ fn default_read_only_subpaths_for_writable_root(
     }
 
     let top_level_agents = writable_root.join(".agents");
-    if protect_missing_dot_codex || top_level_agents.as_path().is_dir() {
+    if top_level_agents.as_path().is_dir() {
         subpaths.push(top_level_agents);
     }
 
-    // Keep top level project metadata under .git, .agents, and .codex
-    // read-only to the agent by default. For the workspace root itself,
-    // protect these paths even before they exist so first time creation still
-    // goes through the protected path approval flow.
+    // Keep top level project metadata under .git and .codex read-only to the
+    // agent by default. Existing workspace metadata directories remain
+    // read-only when present. For the workspace root itself, protect .git and
+    // .codex even before they exist so first time creation still goes through
+    // the protected path approval flow.
     let top_level_codex = writable_root.join(".codex");
     if protect_missing_dot_codex || top_level_codex.as_path().is_dir() {
         subpaths.push(top_level_codex);
@@ -4355,7 +4356,6 @@ mod tests {
             AbsolutePathBuf::from_absolute_path(canonical_cwd.join("docs/public"))
                 .expect("canonical docs/public");
         let mut expected_cwd_reserved_paths = vec![
-            canonical_cwd.join(".agents"),
             canonical_cwd.join(".codex"),
             canonical_cwd.join(".git"),
             expected_docs.to_path_buf(),
@@ -4394,11 +4394,8 @@ mod tests {
         let docs = AbsolutePathBuf::resolve_path_against_base("docs", cwd.path());
         let canonical_cwd = codex_utils_absolute_path::canonicalize_preserving_symlinks(cwd.path())
             .expect("canonicalize cwd");
-        let mut expected_reserved_paths = vec![
-            canonical_cwd.join(".agents"),
-            canonical_cwd.join(".codex"),
-            canonical_cwd.join(".git"),
-        ];
+        let mut expected_reserved_paths =
+            vec![canonical_cwd.join(".codex"), canonical_cwd.join(".git")];
         expected_reserved_paths.sort();
         let policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![],

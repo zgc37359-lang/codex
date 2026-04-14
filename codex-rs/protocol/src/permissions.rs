@@ -1125,14 +1125,15 @@ fn default_read_only_subpaths_for_writable_root(
     }
 
     let top_level_agents = writable_root.join(".agents");
-    if protect_missing_dot_codex || top_level_agents.as_path().is_dir() {
+    if top_level_agents.as_path().is_dir() {
         subpaths.push(top_level_agents);
     }
 
-    // Keep top level project metadata under .git, .agents, and .codex
-    // read-only to the agent by default. For the workspace root itself,
-    // protect these paths even before they exist so first time creation still
-    // goes through the protected path approval flow.
+    // Keep top level project metadata under .git and .codex read-only to the
+    // agent by default. Existing workspace metadata directories remain
+    // read-only when present. For the workspace root itself, protect .git and
+    // .codex even before they exist so first time creation still goes through
+    // the protected path approval flow.
     let top_level_codex = writable_root.join(".codex");
     if protect_missing_dot_codex || top_level_codex.as_path().is_dir() {
         subpaths.push(top_level_codex);
@@ -1297,7 +1298,6 @@ mod tests {
         )
         .expect("absolute canonical root");
         let expected_dot_git = expected_root.join(".git");
-        let expected_dot_agents = expected_root.join(".agents");
         let expected_dot_codex = expected_root.join(".codex");
 
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
@@ -1314,11 +1314,6 @@ mod tests {
             writable_roots[0]
                 .read_only_subpaths
                 .contains(&expected_dot_git)
-        );
-        assert!(
-            writable_roots[0]
-                .read_only_subpaths
-                .contains(&expected_dot_agents)
         );
         assert!(
             writable_roots[0]
@@ -1402,13 +1397,6 @@ mod tests {
                 .join(".git"),
         )
         .expect("absolute dot git");
-        let expected_dot_agents = AbsolutePathBuf::from_absolute_path(
-            std::env::current_dir()
-                .expect("current dir")
-                .join(relative_cwd)
-                .join(".agents"),
-        )
-        .expect("absolute dot agents");
         let expected_dot_codex = AbsolutePathBuf::from_absolute_path(
             std::env::current_dir()
                 .expect("current dir")
@@ -1442,12 +1430,6 @@ mod tests {
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
                         path: expected_dot_git,
-                    },
-                    access: FileSystemAccessMode::Read,
-                },
-                FileSystemSandboxEntry {
-                    path: FileSystemPath::Path {
-                        path: expected_dot_agents,
                     },
                     access: FileSystemAccessMode::Read,
                 },

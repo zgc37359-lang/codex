@@ -34,6 +34,7 @@ use core_test_support::assert_regex_match;
 use core_test_support::responses;
 use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::namespace_child_tool;
 use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::test_codex;
@@ -90,13 +91,18 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
 
     let call_id = "call-123";
     let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__echo");
+    let namespace = format!("mcp__{server_name}__");
 
-    mount_sse_once(
+    let call_mock = mount_sse_once(
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, &tool_name, "{\"message\":\"ping\"}"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                "echo",
+                "{\"message\":\"ping\"}",
+            ),
             responses::ev_completed("resp-1"),
         ]),
     )
@@ -222,6 +228,12 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let output_item = final_mock.single_request().function_call_output(call_id);
+    let request_body = call_mock.single_request().body_json();
+    assert!(
+        namespace_child_tool(&request_body, &namespace, "echo").is_some(),
+        "direct MCP tool should be sent as a namespace child tool: {request_body:?}"
+    );
+
     let output_text = output_item
         .get("output")
         .and_then(Value::as_str)
@@ -504,13 +516,14 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
     let call_id = "img-1";
     let server_name = "rmcp";
     let tool_name = format!("mcp__{server_name}__image");
+    let namespace = format!("mcp__{server_name}__");
 
     // First stream: model decides to call the image tool.
     mount_sse_once(
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, &tool_name, "{}"),
+            responses::ev_function_call_with_namespace(call_id, &namespace, "image", "{}"),
             responses::ev_completed("resp-1"),
         ]),
     )
@@ -693,7 +706,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
 
     let call_id = "img-text-only-1";
     let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__image");
+    let namespace = format!("mcp__{server_name}__");
     let text_only_model_slug = "rmcp-text-only-model";
 
     let models_mock = mount_models_once(
@@ -743,7 +756,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, &tool_name, "{}"),
+            responses::ev_function_call_with_namespace(call_id, &namespace, "image", "{}"),
             responses::ev_completed("resp-1"),
         ]),
     )
@@ -864,13 +877,18 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
 
     let call_id = "call-1234";
     let server_name = "rmcp_whitelist";
-    let tool_name = format!("mcp__{server_name}__echo");
+    let namespace = format!("mcp__{server_name}__");
 
     mount_sse_once(
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, &tool_name, "{\"message\":\"ping\"}"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                "echo",
+                "{\"message\":\"ping\"}",
+            ),
             responses::ev_completed("resp-1"),
         ]),
     )
@@ -1006,13 +1024,18 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
 
     let call_id = "call-456";
     let server_name = "rmcp_http";
-    let tool_name = format!("mcp__{server_name}__echo");
+    let namespace = format!("mcp__{server_name}__");
 
     mount_sse_once(
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, &tool_name, "{\"message\":\"ping\"}"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                "echo",
+                "{\"message\":\"ping\"}",
+            ),
             responses::ev_completed("resp-1"),
         ]),
     )
@@ -1211,12 +1234,18 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     let call_id = "call-789";
     let server_name = "rmcp_http_oauth";
     let tool_name = format!("mcp__{server_name}__echo");
+    let namespace = format!("mcp__{server_name}__");
 
     mount_sse_once(
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(call_id, &tool_name, "{\"message\":\"ping\"}"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                "echo",
+                "{\"message\":\"ping\"}",
+            ),
             responses::ev_completed("resp-1"),
         ]),
     )

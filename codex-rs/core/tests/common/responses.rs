@@ -315,6 +315,31 @@ pub(crate) fn output_value_to_text(value: &Value) -> Option<String> {
     }
 }
 
+pub fn namespace_child_tool<'a>(
+    body: &'a Value,
+    namespace: &str,
+    tool_name: &str,
+) -> Option<&'a Value> {
+    let tools = body.get("tools")?.as_array()?;
+    for tool in tools {
+        if tool.get("name").and_then(Value::as_str) != Some(namespace)
+            || tool.get("type").and_then(Value::as_str) != Some("namespace")
+        {
+            continue;
+        }
+
+        let child_tools = tool.get("tools")?.as_array()?;
+        if let Some(child_tool) = child_tools
+            .iter()
+            .find(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name))
+        {
+            return Some(child_tool);
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,6 +799,24 @@ pub fn ev_function_call(call_id: &str, name: &str, arguments: &str) -> Value {
         "item": {
             "type": "function_call",
             "call_id": call_id,
+            "name": name,
+            "arguments": arguments
+        }
+    })
+}
+
+pub fn ev_function_call_with_namespace(
+    call_id: &str,
+    namespace: &str,
+    name: &str,
+    arguments: &str,
+) -> Value {
+    serde_json::json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "call_id": call_id,
+            "namespace": namespace,
             "name": name,
             "arguments": arguments
         }

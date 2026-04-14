@@ -259,7 +259,7 @@ fn stored_thread_from_proto(thread: proto::StoredThread) -> ThreadStoreResult<St
 
     Ok(StoredThread {
         thread_id,
-        rollout_path: thread.rollout_path.map(PathBuf::from),
+        rollout_path: None,
         forked_from_id,
         preview: thread.preview,
         name: thread.name,
@@ -426,7 +426,6 @@ mod tests {
                     agent_role: None,
                     agent_path: None,
                     reasoning_effort: Some("medium".to_string()),
-                    rollout_path: None,
                     first_user_message: Some("hello".to_string()),
                 }],
                 next_cursor: Some("cursor-2".to_string()),

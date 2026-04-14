@@ -51,8 +51,7 @@ message StoredThread {
   optional string agent_role = 15;
   optional string agent_path = 16;
   optional string reasoning_effort = 17;
-  optional string rollout_path = 18;
-  optional string first_user_message = 19;
+  optional string first_user_message = 18;
 }
 
 message SessionSource {

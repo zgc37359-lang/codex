@@ -70,8 +70,6 @@ pub struct StoredThread {
     #[prost(string, optional, tag = "17")]
     pub reasoning_effort: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "18")]
-    pub rollout_path: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag = "19")]
     pub first_user_message: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

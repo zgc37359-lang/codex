@@ -1068,9 +1068,12 @@ mod tests {
                 "--bind".to_string(),
                 "/".to_string(),
                 "/".to_string(),
-                // Mask the default protected .codex subpath under that writable
-                // root. Because the root is `/` in this test, the carveout path
-                // appears as `/.codex`.
+                // Mask the default protected `.git` and `.codex` subpaths under
+                // that writable root. Because the root is `/` in this test, the
+                // carveout paths appear as `/.git` and `/.codex`.
+                "--ro-bind".to_string(),
+                "/dev/null".to_string(),
+                "/.git".to_string(),
                 "--ro-bind".to_string(),
                 "/dev/null".to_string(),
                 "/.codex".to_string(),

@@ -1114,25 +1114,25 @@ fn default_read_only_subpaths_for_writable_root(
     // writable root itself.
     let top_level_git_is_file = top_level_git.as_path().is_file();
     let top_level_git_is_dir = top_level_git.as_path().is_dir();
-    if top_level_git_is_dir || top_level_git_is_file {
-        if top_level_git_is_file
-            && is_git_pointer_file(&top_level_git)
-            && let Some(gitdir) = resolve_gitdir_from_file(&top_level_git)
-        {
-            subpaths.push(gitdir);
-        }
+    if top_level_git_is_file
+        && is_git_pointer_file(&top_level_git)
+        && let Some(gitdir) = resolve_gitdir_from_file(&top_level_git)
+    {
+        subpaths.push(gitdir);
+    }
+    if protect_missing_dot_codex || top_level_git_is_dir || top_level_git_is_file {
         subpaths.push(top_level_git);
     }
 
     let top_level_agents = writable_root.join(".agents");
-    if top_level_agents.as_path().is_dir() {
+    if protect_missing_dot_codex || top_level_agents.as_path().is_dir() {
         subpaths.push(top_level_agents);
     }
 
-    // Keep top-level project metadata under .codex read-only to the agent by
-    // default. For the workspace root itself, protect it even before the
-    // directory exists so first-time creation still goes through the
-    // protected-path approval flow.
+    // Keep top level project metadata under .git, .agents, and .codex
+    // read-only to the agent by default. For the workspace root itself,
+    // protect these paths even before they exist so first time creation still
+    // goes through the protected path approval flow.
     let top_level_codex = writable_root.join(".codex");
     if protect_missing_dot_codex || top_level_codex.as_path().is_dir() {
         subpaths.push(top_level_codex);
@@ -1290,12 +1290,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn writable_roots_proactively_protect_missing_dot_codex() {
+    fn writable_roots_proactively_protect_missing_project_metadata_paths() {
         let cwd = TempDir::new().expect("tempdir");
         let expected_root = AbsolutePathBuf::from_absolute_path(
             cwd.path().canonicalize().expect("canonicalize cwd"),
         )
         .expect("absolute canonical root");
+        let expected_dot_git = expected_root.join(".git");
+        let expected_dot_agents = expected_root.join(".agents");
         let expected_dot_codex = expected_root.join(".codex");
 
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
@@ -1308,6 +1310,16 @@ mod tests {
         let writable_roots = policy.get_writable_roots_with_cwd(cwd.path());
         assert_eq!(writable_roots.len(), 1);
         assert_eq!(writable_roots[0].root, expected_root);
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .contains(&expected_dot_git)
+        );
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .contains(&expected_dot_agents)
+        );
         assert!(
             writable_roots[0]
                 .read_only_subpaths
@@ -1383,6 +1395,20 @@ mod tests {
     #[test]
     fn legacy_workspace_write_projection_accepts_relative_cwd() {
         let relative_cwd = Path::new("workspace");
+        let expected_dot_git = AbsolutePathBuf::from_absolute_path(
+            std::env::current_dir()
+                .expect("current dir")
+                .join(relative_cwd)
+                .join(".git"),
+        )
+        .expect("absolute dot git");
+        let expected_dot_agents = AbsolutePathBuf::from_absolute_path(
+            std::env::current_dir()
+                .expect("current dir")
+                .join(relative_cwd)
+                .join(".agents"),
+        )
+        .expect("absolute dot agents");
         let expected_dot_codex = AbsolutePathBuf::from_absolute_path(
             std::env::current_dir()
                 .expect("current dir")
@@ -1412,6 +1438,18 @@ mod tests {
                         value: FileSystemSpecialPath::CurrentWorkingDirectory,
                     },
                     access: FileSystemAccessMode::Write,
+                },
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Path {
+                        path: expected_dot_git,
+                    },
+                    access: FileSystemAccessMode::Read,
+                },
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Path {
+                        path: expected_dot_agents,
+                    },
+                    access: FileSystemAccessMode::Read,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {

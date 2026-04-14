@@ -1100,7 +1100,56 @@ impl PluginsManager {
     ) {
         if config.features.enabled(Feature::Plugins) {
             self.start_curated_repo_sync();
-            self.maybe_start_marketplace_auto_upgrade(config);
+            let should_spawn_marketplace_auto_upgrade = {
+                let mut state = match self.configured_marketplace_upgrade_state.write() {
+                    Ok(state) => state,
+                    Err(err) => err.into_inner(),
+                };
+                if state.in_flight {
+                    false
+                } else {
+                    state.in_flight = true;
+                    true
+                }
+            };
+            if should_spawn_marketplace_auto_upgrade {
+                let manager = Arc::clone(self);
+                let config = config.clone();
+                if let Err(err) = std::thread::Builder::new()
+                    .name("plugins-marketplace-auto-upgrade".to_string())
+                    .spawn(move || {
+                        let outcome =
+                            manager.upgrade_configured_marketplaces_for_config(&config, None);
+                        match outcome {
+                            Ok(outcome) => {
+                                for error in outcome.errors {
+                                    warn!(
+                                        marketplace = error.marketplace_name,
+                                        error = %error.message,
+                                        "failed to auto-upgrade configured marketplace"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                warn!("failed to auto-upgrade configured marketplaces: {err}");
+                            }
+                        }
+
+                        let mut state = match manager.configured_marketplace_upgrade_state.write() {
+                            Ok(state) => state,
+                            Err(err) => err.into_inner(),
+                        };
+                        state.in_flight = false;
+                    })
+                {
+                    let mut state = match self.configured_marketplace_upgrade_state.write() {
+                        Ok(state) => state,
+                        Err(err) => err.into_inner(),
+                    };
+                    state.in_flight = false;
+                    warn!("failed to start configured marketplace auto-upgrade task: {err}");
+                }
+            }
             start_startup_remote_plugin_sync_once(
                 Arc::clone(self),
                 self.codex_home.clone(),
@@ -1122,63 +1171,6 @@ impl PluginsManager {
                     );
                 }
             });
-        }
-    }
-
-    pub fn maybe_start_marketplace_auto_upgrade(self: &Arc<Self>, config: &Config) {
-        if !config.features.enabled(Feature::Plugins) {
-            return;
-        }
-
-        let should_spawn = {
-            let mut state = match self.configured_marketplace_upgrade_state.write() {
-                Ok(state) => state,
-                Err(err) => err.into_inner(),
-            };
-            if state.in_flight {
-                return;
-            }
-            state.in_flight = true;
-            true
-        };
-        if !should_spawn {
-            return;
-        }
-
-        let manager = Arc::clone(self);
-        let config = config.clone();
-        if let Err(err) = std::thread::Builder::new()
-            .name("plugins-marketplace-auto-upgrade".to_string())
-            .spawn(move || {
-                let outcome = manager.upgrade_configured_marketplaces_for_config(&config, None);
-                match outcome {
-                    Ok(outcome) => {
-                        for error in outcome.errors {
-                            warn!(
-                                marketplace = error.marketplace_name,
-                                error = %error.message,
-                                "failed to auto-upgrade configured marketplace"
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        warn!("failed to auto-upgrade configured marketplaces: {err}");
-                    }
-                }
-
-                let mut state = match manager.configured_marketplace_upgrade_state.write() {
-                    Ok(state) => state,
-                    Err(err) => err.into_inner(),
-                };
-                state.in_flight = false;
-            })
-        {
-            let mut state = match self.configured_marketplace_upgrade_state.write() {
-                Ok(state) => state,
-                Err(err) => err.into_inner(),
-            };
-            state.in_flight = false;
-            warn!("failed to start configured marketplace auto-upgrade task: {err}");
         }
     }
 

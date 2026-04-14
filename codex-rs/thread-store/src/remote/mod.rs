@@ -10,7 +10,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
-use codex_protocol::protocol::ReadOnlyAccess;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -236,6 +235,8 @@ fn proto_source(kind: proto::SessionSourceKind) -> proto::SessionSource {
 }
 
 fn stored_thread_from_proto(thread: proto::StoredThread) -> ThreadStoreResult<StoredThread> {
+    // Keep this mapping boring: the proto mirrors StoredThread, except for Rust
+    // domain types that have to cross gRPC as stable scalar values.
     let source = thread
         .source
         .as_ref()
@@ -258,7 +259,7 @@ fn stored_thread_from_proto(thread: proto::StoredThread) -> ThreadStoreResult<St
 
     Ok(StoredThread {
         thread_id,
-        rollout_path: None,
+        rollout_path: thread.rollout_path.map(PathBuf::from),
         forked_from_id,
         preview: thread.preview,
         name: thread.name,
@@ -280,12 +281,9 @@ fn stored_thread_from_proto(thread: proto::StoredThread) -> ThreadStoreResult<St
         agent_path: thread.agent_path,
         git_info: thread.git_info.map(git_info_from_proto),
         approval_mode: AskForApproval::OnRequest,
-        sandbox_policy: SandboxPolicy::ReadOnly {
-            access: ReadOnlyAccess::FullAccess,
-            network_access: false,
-        },
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
         token_usage: None,
-        first_user_message: None,
+        first_user_message: thread.first_user_message,
         history: None,
     })
 }
@@ -428,6 +426,8 @@ mod tests {
                     agent_role: None,
                     agent_path: None,
                     reasoning_effort: Some("medium".to_string()),
+                    rollout_path: None,
+                    first_user_message: Some("hello".to_string()),
                 }],
                 next_cursor: Some("cursor-2".to_string()),
             }))
@@ -476,6 +476,7 @@ mod tests {
         );
         assert_eq!(item.name.as_deref(), Some("named thread"));
         assert_eq!(item.preview, "hello");
+        assert_eq!(item.first_user_message.as_deref(), Some("hello"));
         assert_eq!(item.model_provider, "openai");
         assert_eq!(item.model.as_deref(), Some("gpt-5"));
         assert_eq!(item.created_at.timestamp(), 100);

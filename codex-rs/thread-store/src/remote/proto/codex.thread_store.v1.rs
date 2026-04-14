@@ -32,6 +32,9 @@ pub struct ListThreadsResponse {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredThread {
+    /// Mirrors Rust's StoredThread. Domain types that are not protobuf-native,
+    /// such as ThreadId, DateTime<Utc>, and PathBuf, are represented as their
+    /// stable scalar forms on the wire.
     #[prost(string, tag = "1")]
     pub thread_id: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
@@ -66,6 +69,10 @@ pub struct StoredThread {
     pub agent_path: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "17")]
     pub reasoning_effort: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "18")]
+    pub rollout_path: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "19")]
+    pub first_user_message: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SessionSource {

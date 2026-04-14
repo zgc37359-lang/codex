@@ -31,6 +31,9 @@ message ListThreadsResponse {
 }
 
 message StoredThread {
+  // Mirrors Rust's StoredThread. Domain types that are not protobuf-native,
+  // such as ThreadId, DateTime<Utc>, and PathBuf, are represented as their
+  // stable scalar forms on the wire.
   string thread_id = 1;
   optional string forked_from_id = 2;
   string preview = 3;
@@ -48,6 +51,8 @@ message StoredThread {
   optional string agent_role = 15;
   optional string agent_path = 16;
   optional string reasoning_effort = 17;
+  optional string rollout_path = 18;
+  optional string first_user_message = 19;
 }
 
 message SessionSource {

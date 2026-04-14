@@ -67,6 +67,7 @@ impl Command for PostNotification {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::Command;
     use pretty_assertions::assert_eq;
 
     use super::PostNotification;

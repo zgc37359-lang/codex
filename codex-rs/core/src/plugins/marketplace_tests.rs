@@ -39,8 +39,94 @@ fn resolve_marketplace_plugin_finds_repo_marketplace_plugin() {
         ResolvedMarketplacePlugin {
             plugin_id: PluginId::new("local-plugin".to_string(), "codex-curated".to_string())
                 .unwrap(),
-            source_path: AbsolutePathBuf::try_from(repo_root.join("plugin-1")).unwrap(),
+            source: MarketplacePluginSource::Local {
+                path: AbsolutePathBuf::try_from(repo_root.join("plugin-1")).unwrap(),
+            },
             auth_policy: MarketplacePluginAuthPolicy::OnInstall,
+        }
+    );
+}
+
+#[test]
+fn resolve_marketplace_plugin_supports_git_subdir_sources() {
+    let tmp = tempdir().unwrap();
+    let repo_root = tmp.path().join("repo");
+    fs::create_dir_all(repo_root.join(".git")).unwrap();
+    fs::create_dir_all(repo_root.join(".agents/plugins")).unwrap();
+    fs::write(
+        repo_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "codex-curated",
+  "plugins": [
+    {
+      "name": "remote-plugin",
+      "source": {
+        "source": "git-subdir",
+        "url": "openai/joey_marketplace3",
+        "path": "plugins/toolkit",
+        "ref": "main",
+        "sha": "abc123"
+      }
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let resolved = resolve_marketplace_plugin(
+        &AbsolutePathBuf::try_from(repo_root.join(".agents/plugins/marketplace.json")).unwrap(),
+        "remote-plugin",
+        Some(Product::Codex),
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolved,
+        ResolvedMarketplacePlugin {
+            plugin_id: PluginId::new("remote-plugin".to_string(), "codex-curated".to_string())
+                .unwrap(),
+            source: MarketplacePluginSource::Git {
+                url: "https://github.com/openai/joey_marketplace3.git".to_string(),
+                path: Some("plugins/toolkit".to_string()),
+                ref_name: Some("main".to_string()),
+                sha: Some("abc123".to_string()),
+            },
+            auth_policy: MarketplacePluginAuthPolicy::OnInstall,
+        }
+    );
+}
+
+#[test]
+fn resolve_marketplace_plugin_supports_string_local_sources() {
+    let tmp = tempdir().unwrap();
+    let repo_root = tmp.path().join("repo");
+    fs::create_dir_all(repo_root.join(".git")).unwrap();
+    fs::create_dir_all(repo_root.join(".agents/plugins")).unwrap();
+    fs::write(
+        repo_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "codex-curated",
+  "plugins": [
+    {
+      "name": "local-plugin",
+      "source": "./plugin-2"
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let resolved = resolve_marketplace_plugin(
+        &AbsolutePathBuf::try_from(repo_root.join(".agents/plugins/marketplace.json")).unwrap(),
+        "local-plugin",
+        Some(Product::Codex),
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolved.source,
+        MarketplacePluginSource::Local {
+            path: AbsolutePathBuf::try_from(repo_root.join("plugin-2")).unwrap(),
         }
     );
 }
@@ -306,8 +392,10 @@ fn list_marketplaces_keeps_distinct_entries_for_same_name() {
     .unwrap();
 
     assert_eq!(
-        resolved.source_path,
-        AbsolutePathBuf::try_from(repo_root.join("repo-plugin")).unwrap()
+        resolved.source,
+        MarketplacePluginSource::Local {
+            path: AbsolutePathBuf::try_from(repo_root.join("repo-plugin")).unwrap(),
+        }
     );
 }
 
@@ -808,8 +896,10 @@ fn resolve_marketplace_plugin_uses_first_duplicate_entry() {
     .unwrap();
 
     assert_eq!(
-        resolved.source_path,
-        AbsolutePathBuf::try_from(repo_root.join("first")).unwrap()
+        resolved.source,
+        MarketplacePluginSource::Local {
+            path: AbsolutePathBuf::try_from(repo_root.join("first")).unwrap(),
+        }
     );
 }
 

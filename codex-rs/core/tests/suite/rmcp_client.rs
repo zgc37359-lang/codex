@@ -34,7 +34,6 @@ use core_test_support::assert_regex_match;
 use core_test_support::responses;
 use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_sse_once;
-use core_test_support::responses::namespace_child_tool;
 use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::test_codex;
@@ -228,10 +227,11 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let output_item = final_mock.single_request().function_call_output(call_id);
-    let request_body = call_mock.single_request().body_json();
+    let request = call_mock.single_request();
     assert!(
-        namespace_child_tool(&request_body, &namespace, "echo").is_some(),
-        "direct MCP tool should be sent as a namespace child tool: {request_body:?}"
+        request.tool_by_name(&namespace, "echo").is_some(),
+        "direct MCP tool should be sent as a namespace child tool: {:?}",
+        request.body_json()
     );
 
     let output_text = output_item

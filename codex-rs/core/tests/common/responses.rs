@@ -125,6 +125,10 @@ impl ResponsesRequest {
         self.body_json().to_string().contains(&json_fragment)
     }
 
+    pub fn tool_by_name(&self, namespace: &str, tool_name: &str) -> Option<Value> {
+        namespace_child_tool(&self.body_json(), namespace, tool_name).cloned()
+    }
+
     pub fn instructions_text(&self) -> String {
         self.body_json()["instructions"]
             .as_str()

@@ -13,7 +13,6 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_sequence;
-use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
@@ -114,10 +113,10 @@ async fn codex_apps_file_params_upload_local_paths_before_mcp_tool_call() -> Res
     .await?;
 
     let requests = mock.requests();
-    let body = requests[0].body_json();
     let Some(extract_tool) =
-        namespace_child_tool(&body, DOCUMENT_EXTRACT_NAMESPACE, DOCUMENT_EXTRACT_TOOL)
+        requests[0].tool_by_name(DOCUMENT_EXTRACT_NAMESPACE, DOCUMENT_EXTRACT_TOOL)
     else {
+        let body = requests[0].body_json();
         panic!(
             "missing tool {DOCUMENT_EXTRACT_NAMESPACE}{DOCUMENT_EXTRACT_TOOL} in /v1/responses request: {body:?}"
         )

@@ -14,7 +14,6 @@ use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
-use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -307,20 +306,24 @@ async fn explicit_plugin_mentions_inject_plugin_guidance() -> Result<()> {
             .any(|name| name == "mcp__codex_apps__google_calendar"),
         "expected plugin app tools to become visible for this turn: {request_tools:?}"
     );
-    let echo_description = namespace_child_tool(&request_body, "mcp__sample__", "echo")
-        .and_then(|tool| tool.get("description").and_then(serde_json::Value::as_str))
+    let echo_tool = request
+        .tool_by_name("mcp__sample__", "echo")
+        .expect("plugin MCP tool should be present");
+    let echo_description = echo_tool
+        .get("description")
+        .and_then(serde_json::Value::as_str)
         .expect("plugin MCP tool description should be present");
     assert!(
         echo_description.contains("This tool is part of plugin `sample`."),
         "expected plugin MCP provenance in tool description: {echo_description:?}"
     );
-    let calendar_description = namespace_child_tool(
-        &request_body,
-        "mcp__codex_apps__google_calendar",
-        "_create_event",
-    )
-    .and_then(|tool| tool.get("description").and_then(serde_json::Value::as_str))
-    .expect("plugin app tool description should be present");
+    let calendar_tool = request
+        .tool_by_name("mcp__codex_apps__google_calendar", "_create_event")
+        .expect("plugin app tool should be present");
+    let calendar_description = calendar_tool
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .expect("plugin app tool description should be present");
     assert!(
         calendar_description.contains("This tool is part of plugin `sample`."),
         "expected plugin app provenance in tool description: {calendar_description:?}"

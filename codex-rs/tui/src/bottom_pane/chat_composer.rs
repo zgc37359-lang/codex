@@ -165,11 +165,12 @@ use super::footer::footer_hint_items_width;
 use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
 use super::footer::max_left_width_for_right;
-use super::footer::passive_footer_status_line;
+use super::footer::passive_footer_status_lines;
 use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
 use super::footer::render_footer_line;
+use super::footer::render_footer_lines;
 use super::footer::reset_mode_after_activity;
 use super::footer::single_line_footer_layout;
 use super::footer::toggle_shortcut_mode;
@@ -362,6 +363,7 @@ pub(crate) struct ChatComposer {
     windows_degraded_sandbox_active: bool,
     is_zellij: bool,
     status_line_value: Option<Line<'static>>,
+    status_hud_lines: Vec<Line<'static>>,
     status_line_enabled: bool,
     // Agent label injected into the footer's contextual row when multi-agent mode is active.
     active_agent_label: Option<String>,
@@ -500,6 +502,7 @@ impl ChatComposer {
                 Some(codex_terminal_detection::Multiplexer::Zellij {})
             ),
             status_line_value: None,
+            status_hud_lines: Vec::new(),
             status_line_enabled: false,
             active_agent_label: None,
             history_search: None,
@@ -522,7 +525,6 @@ impl ChatComposer {
 
     pub fn set_skill_mentions(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.skills = skills;
-        self.sync_popups();
     }
 
     pub fn set_plugin_mentions(&mut self, plugins: Option<Vec<PluginCapabilitySummary>>) {
@@ -2971,6 +2973,7 @@ impl ChatComposer {
             context_window_percent: self.context_window_percent,
             context_window_used_tokens: self.context_window_used_tokens,
             status_line_value: self.status_line_value.clone(),
+            status_hud_lines: self.status_hud_lines.clone(),
             status_line_enabled: self.status_line_enabled,
             active_agent_label: self.active_agent_label.clone(),
         }
@@ -3495,6 +3498,14 @@ impl ChatComposer {
         true
     }
 
+    pub(crate) fn set_status_hud_lines(&mut self, status_hud_lines: Vec<Line<'static>>) -> bool {
+        if self.status_hud_lines == status_hud_lines {
+            return false;
+        }
+        self.status_hud_lines = status_hud_lines;
+        true
+    }
+
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) -> bool {
         if self.status_line_enabled == enabled {
             return false;
@@ -3694,18 +3705,24 @@ impl ChatComposer {
                     let available_width =
                         hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
                     let status_line_active = uses_passive_footer_status_layout(&footer_props);
-                    let combined_status_line = if status_line_active {
-                        passive_footer_status_line(&footer_props)
+                    let combined_status_lines = if status_line_active {
+                        passive_footer_status_lines(&footer_props)
+                            .into_iter()
                             .map(ratatui::prelude::Stylize::dim)
+                            .collect::<Vec<_>>()
                     } else {
-                        None
+                        Vec::new()
                     };
-                    let mut truncated_status_line = if status_line_active {
-                        combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
-                        })
+                    let mut truncated_status_lines = if status_line_active {
+                        combined_status_lines
+                            .iter()
+                            .cloned()
+                            .map(|line| {
+                                truncate_line_with_ellipsis_if_overflow(line, available_width)
+                            })
+                            .collect::<Vec<_>>()
                     } else {
-                        None
+                        Vec::new()
                     };
                     let left_mode_indicator = if status_line_active {
                         None
@@ -3720,8 +3737,8 @@ impl ChatComposer {
                     } else if let Some(items) = self.footer_hint_override.as_ref() {
                         footer_hint_items_width(items)
                     } else if status_line_active {
-                        truncated_status_line
-                            .as_ref()
+                        truncated_status_lines
+                            .first()
                             .map(|line| line.width() as u16)
                             .unwrap_or(0)
                     } else {
@@ -3756,12 +3773,14 @@ impl ChatComposer {
                     if status_line_active
                         && let Some(max_left) = max_left_width_for_right(hint_rect, right_width)
                         && left_width > max_left
-                        && let Some(line) = combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                        })
                     {
-                        left_width = line.width() as u16;
-                        truncated_status_line = Some(line);
+                        if let Some(line) = truncated_status_lines.first_mut() {
+                            *line = truncate_line_with_ellipsis_if_overflow(
+                                line.clone(),
+                                max_left as usize,
+                            );
+                            left_width = line.width() as u16;
+                        }
                     }
                     let can_show_left_and_context =
                         can_show_left_with_context(hint_rect, left_width, right_width);
@@ -3810,8 +3829,12 @@ impl ChatComposer {
                         match summary_left {
                             SummaryLeft::Default => {
                                 if status_line_active {
-                                    if let Some(line) = truncated_status_line.clone() {
-                                        render_footer_line(hint_rect, buf, line);
+                                    if !truncated_status_lines.is_empty() {
+                                        render_footer_lines(
+                                            hint_rect,
+                                            buf,
+                                            truncated_status_lines.clone(),
+                                        );
                                     } else {
                                         render_footer_from_props(
                                             hint_rect,
@@ -3847,8 +3870,8 @@ impl ChatComposer {
                     } else if let Some(items) = self.footer_hint_override.as_ref() {
                         render_footer_hint_items(hint_rect, buf, items);
                     } else if status_line_active {
-                        if let Some(line) = truncated_status_line {
-                            render_footer_line(hint_rect, buf, line);
+                        if !truncated_status_lines.is_empty() {
+                            render_footer_lines(hint_rect, buf, truncated_status_lines);
                         }
                     } else {
                         render_footer_from_props(
@@ -3863,7 +3886,15 @@ impl ChatComposer {
                     }
 
                     if show_right && let Some(line) = &right_line {
-                        render_context_right(hint_rect, buf, line);
+                        let right_area = if status_line_active {
+                            Rect {
+                                height: 1,
+                                ..hint_rect
+                            }
+                        } else {
+                            hint_rect
+                        };
+                        render_context_right(right_area, buf, line);
                     }
                 }
             }
@@ -4009,8 +4040,6 @@ impl ChatComposer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::PathBufExt;
-    use crate::test_support::test_path_buf;
     use image::ImageBuffer;
     use image::Rgba;
     use pretty_assertions::assert_eq;
@@ -5055,44 +5084,7 @@ mod tests {
     }
 
     #[test]
-    fn set_skill_mentions_refreshes_open_mention_popup() {
-        let (tx, _rx) = unbounded_channel::<AppEvent>();
-        let sender = AppEventSender::new(tx);
-        let mut composer = ChatComposer::new(
-            /*has_input_focus*/ true,
-            sender,
-            /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
-            /*disable_paste_burst*/ false,
-        );
-        composer.set_text_content("$".to_string(), Vec::new(), Vec::new());
-        assert!(matches!(composer.active_popup, ActivePopup::None));
-
-        let skill_path = test_path_buf("/tmp/skill/SKILL.md").abs();
-        composer.set_skill_mentions(Some(vec![SkillMetadata {
-            name: "codex".to_string(),
-            description: "Primary personal Codex repo skill.".to_string(),
-            short_description: None,
-            interface: None,
-            dependencies: None,
-            policy: None,
-            path_to_skills_md: skill_path.clone(),
-            scope: codex_protocol::protocol::SkillScope::User,
-        }]));
-
-        let ActivePopup::Skill(popup) = &composer.active_popup else {
-            panic!("expected mention popup to open after skills update");
-        };
-        let mention = popup
-            .selected_mention()
-            .expect("expected skill mention to be selected");
-        assert_eq!(mention.insert_text, "$codex".to_string());
-        assert_eq!(mention.path, Some(skill_path.display().to_string()));
-    }
-
-    #[test]
     fn mention_items_show_plugin_owned_skill_and_app_duplicates() {
-        let skill_path = test_path_buf("/tmp/repo/google-calendar/SKILL.md").abs();
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
         let mut composer = ChatComposer::new(
@@ -5118,7 +5110,7 @@ mod tests {
             }),
             dependencies: None,
             policy: None,
-            path_to_skills_md: skill_path.clone(),
+            path_to_skills_md: PathBuf::from("/tmp/repo/google-calendar/SKILL.md"),
             scope: codex_protocol::protocol::SkillScope::Repo,
         }]));
         composer.set_plugin_mentions(Some(vec![PluginCapabilitySummary {
@@ -5155,7 +5147,10 @@ mod tests {
         let mentions = composer.mention_items();
         assert_eq!(mentions.len(), 3);
         assert_eq!(mentions[0].category_tag, Some("[Skill]".to_string()));
-        assert_eq!(mentions[0].path, Some(skill_path.display().to_string()));
+        assert_eq!(
+            mentions[0].path,
+            Some("/tmp/repo/google-calendar/SKILL.md".to_string())
+        );
         assert_eq!(mentions[0].display_name, "Google Calendar".to_string());
         assert_eq!(mentions[1].category_tag, Some("[Plugin]".to_string()));
         assert_eq!(
@@ -5213,7 +5208,7 @@ mod tests {
                     }),
                     dependencies: None,
                     policy: None,
-                    path_to_skills_md: test_path_buf("/tmp/repo/google-calendar/SKILL.md").abs(),
+                    path_to_skills_md: PathBuf::from("/tmp/repo/google-calendar/SKILL.md"),
                     scope: codex_protocol::protocol::SkillScope::Repo,
                 }]));
                 composer.set_plugin_mentions(Some(vec![PluginCapabilitySummary {

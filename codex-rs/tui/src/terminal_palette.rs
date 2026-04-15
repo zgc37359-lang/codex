@@ -1,5 +1,13 @@
 use crate::color::perceptual_distance;
 use ratatui::style::Color;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+static DEFAULT_PALETTE_VERSION: AtomicU64 = AtomicU64::new(0);
+
+fn bump_palette_version() {
+    DEFAULT_PALETTE_VERSION.fetch_add(1, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StdoutColorLevel {
@@ -10,6 +18,16 @@ pub enum StdoutColorLevel {
 }
 
 pub fn stdout_color_level() -> StdoutColorLevel {
+    // Windows Terminal fully supports 24-bit color but the `supports-color`
+    // crate often reports only ANSI-16 because no `COLORTERM` variable is set.
+    // When WT_SESSION is present, promote to TrueColor unconditionally unless
+    // FORCE_COLOR is set (matching diff_render.rs behavior).
+    if std::env::var_os("WT_SESSION").is_some()
+        && std::env::var_os("FORCE_COLOR").is_none()
+    {
+        return StdoutColorLevel::TrueColor;
+    }
+
     match supports_color::on_cached(supports_color::Stream::Stdout) {
         Some(level) if level.has_16m => StdoutColorLevel::TrueColor,
         Some(level) if level.has_256 => StdoutColorLevel::Ansi256,
@@ -31,9 +49,21 @@ pub fn indexed_color(index: u8) -> Color {
 /// Returns the closest color to the target color that the terminal can display.
 pub fn best_color(target: (u8, u8, u8)) -> Color {
     let color_level = stdout_color_level();
-    if color_level == StdoutColorLevel::TrueColor {
+    // Windows Terminal fully supports 24-bit color but the `supports-color`
+    // crate often reports only ANSI-16 because no `COLORTERM` variable is set.
+    // When WT_SESSION is present, promote to TrueColor unconditionally unless
+    // FORCE_COLOR is set (matching diff_render.rs behavior).
+    let promoted_level = if std::env::var_os("WT_SESSION").is_some()
+        && std::env::var_os("FORCE_COLOR").is_none()
+    {
+        StdoutColorLevel::TrueColor
+    } else {
+        color_level
+    };
+
+    if promoted_level == StdoutColorLevel::TrueColor {
         rgb_color(target)
-    } else if color_level == StdoutColorLevel::Ansi256
+    } else if promoted_level == StdoutColorLevel::Ansi256
         && let Some((i, _)) = xterm_fixed_colors().min_by(|(_, a), (_, b)| {
             perceptual_distance(*a, target)
                 .partial_cmp(&perceptual_distance(*b, target))
@@ -48,6 +78,7 @@ pub fn best_color(target: (u8, u8, u8)) -> Color {
 
 pub fn requery_default_colors() {
     imp::requery_default_colors();
+    bump_palette_version();
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +97,14 @@ pub fn default_fg() -> Option<(u8, u8, u8)> {
 
 pub fn default_bg() -> Option<(u8, u8, u8)> {
     default_colors().map(|c| c.bg)
+}
+
+/// Returns a monotonic counter that increments whenever `requery_default_colors()` runs
+/// successfully so cached renderers can know when their styling assumptions (e.g.
+/// background colors baked into cached transcript rows) are stale and need invalidation.
+#[allow(dead_code)]
+pub fn palette_version() -> u64 {
+    DEFAULT_PALETTE_VERSION.load(Ordering::Relaxed)
 }
 
 #[cfg(all(unix, not(test)))]

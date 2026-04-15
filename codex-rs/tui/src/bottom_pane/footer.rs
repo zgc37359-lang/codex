@@ -55,6 +55,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+
 /// The rendering inputs for the footer area under the composer.
 ///
 /// Callers are expected to construct `FooterProps` from higher-level state (`ChatComposer`,
@@ -77,6 +78,7 @@ pub(crate) struct FooterProps {
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) context_window_used_tokens: Option<i64>,
     pub(crate) status_line_value: Option<Line<'static>>,
+    pub(crate) status_hud_lines: Vec<Line<'static>>,
     pub(crate) status_line_enabled: bool,
     /// Active thread label shown when the footer is rendering contextual information instead of an
     /// instructional hint.
@@ -216,8 +218,13 @@ pub(crate) fn footer_height(props: &FooterProps) -> u16 {
 
 /// Render a single precomputed footer line.
 pub(crate) fn render_footer_line(area: Rect, buf: &mut Buffer, line: Line<'static>) {
+    render_footer_lines(area, buf, vec![line]);
+}
+
+/// Render precomputed footer lines.
+pub(crate) fn render_footer_lines(area: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) {
     Paragraph::new(prefix_lines(
-        vec![line],
+        lines,
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
     ))
@@ -240,7 +247,9 @@ pub(crate) fn render_footer_from_props(
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
 ) {
-    Paragraph::new(prefix_lines(
+    render_footer_lines(
+        area,
+        buf,
         footer_from_props_lines(
             props,
             collaboration_mode_indicator,
@@ -248,10 +257,7 @@ pub(crate) fn render_footer_from_props(
             show_shortcuts_hint,
             show_queue_hint,
         ),
-        " ".repeat(FOOTER_INDENT_COLS).into(),
-        " ".repeat(FOOTER_INDENT_COLS).into(),
-    ))
-    .render(area, buf);
+    );
 }
 
 pub(crate) fn left_fits(area: Rect, left_width: u16) -> bool {
@@ -589,10 +595,9 @@ fn footer_from_props_lines(
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
 ) -> Vec<Line<'static>> {
-    // Passive footer context can come from the configurable status line, the
-    // active agent label, or both combined.
-    if let Some(status_line) = passive_footer_status_line(props) {
-        return vec![status_line.dim()];
+    let passive_lines = passive_footer_status_lines(props);
+    if !passive_lines.is_empty() {
+        return passive_lines;
     }
     match props.mode {
         FooterMode::QuitShortcutReminder => {
@@ -641,27 +646,29 @@ fn footer_from_props_lines(
 /// The returned line may contain the configured status line, the currently viewed agent label, or
 /// both combined. Active instructional states such as quit reminders, shortcut overlays, and queue
 /// prompts deliberately return `None` so those call-to-action hints stay visible.
-pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'static>> {
+pub(crate) fn passive_footer_status_lines(props: &FooterProps) -> Vec<Line<'static>> {
     if !shows_passive_footer_line(props) {
-        return None;
+        return Vec::new();
     }
 
-    let mut line = if props.status_line_enabled {
-        props.status_line_value.clone()
-    } else {
-        None
-    };
+    let mut lines = Vec::new();
+    if props.status_line_enabled {
+        if let Some(status_line) = props.status_line_value.clone() {
+            lines.push(status_line);
+        }
+        lines.extend(props.status_hud_lines.clone());
+    }
 
     if let Some(active_agent_label) = props.active_agent_label.as_ref() {
-        if let Some(existing) = line.as_mut() {
+        if let Some(existing) = lines.last_mut() {
             existing.spans.push(" · ".into());
             existing.spans.push(active_agent_label.clone().into());
         } else {
-            line = Some(Line::from(active_agent_label.clone()));
+            lines.push(Line::from(active_agent_label.clone()));
         }
     }
 
-    line
+    lines
 }
 
 /// Whether the current footer mode allows contextual information to replace instructional hints.
@@ -1120,10 +1127,10 @@ mod tests {
                     | FooterMode::EscHint => false,
                 };
                 let status_line_active = uses_passive_footer_status_layout(props);
-                let passive_status_line = if status_line_active {
-                    passive_footer_status_line(props)
+                let passive_status_lines = if status_line_active {
+                    passive_footer_status_lines(props)
                 } else {
-                    None
+                    Vec::new()
                 };
                 let left_mode_indicator = if status_line_active {
                     None
@@ -1131,21 +1138,23 @@ mod tests {
                     collaboration_mode_indicator
                 };
                 let available_width = area.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
-                let mut truncated_status_line = if status_line_active
+                let mut truncated_status_lines = if status_line_active
                     && matches!(
                         props.mode,
                         FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft
                     ) {
-                    passive_status_line
-                        .as_ref()
-                        .map(|line| line.clone().dim())
+                    passive_status_lines
+                        .iter()
+                        .cloned()
+                        .map(ratatui::prelude::Stylize::dim)
                         .map(|line| truncate_line_with_ellipsis_if_overflow(line, available_width))
+                        .collect::<Vec<_>>()
                 } else {
-                    None
+                    Vec::new()
                 };
                 let mut left_width = if status_line_active {
-                    truncated_status_line
-                        .as_ref()
+                    truncated_status_lines
+                        .first()
                         .map(|line| line.width() as u16)
                         .unwrap_or(0)
                 } else {
@@ -1182,15 +1191,12 @@ mod tests {
                 if status_line_active
                     && let Some(max_left) = max_left_width_for_right(area, right_width)
                     && left_width > max_left
-                    && let Some(line) = passive_status_line
-                        .as_ref()
-                        .map(|line| line.clone().dim())
-                        .map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line, max_left as usize)
-                        })
                 {
-                    left_width = line.width() as u16;
-                    truncated_status_line = Some(line);
+                    if let Some(line) = truncated_status_lines.first_mut() {
+                        *line =
+                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize);
+                        left_width = line.width() as u16;
+                    }
                 }
                 let can_show_left_and_context =
                     can_show_left_with_context(area, left_width, right_width);
@@ -1199,11 +1205,18 @@ mod tests {
                     FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft
                 ) {
                     if status_line_active {
-                        if let Some(line) = truncated_status_line.clone() {
-                            render_footer_line(area, f.buffer_mut(), line);
+                        if !truncated_status_lines.is_empty() {
+                            render_footer_lines(area, f.buffer_mut(), truncated_status_lines);
                         }
                         if can_show_left_and_context && let Some(line) = &right_line {
-                            render_context_right(area, f.buffer_mut(), line);
+                            render_context_right(
+                                Rect {
+                                    height: 1,
+                                    ..area
+                                },
+                                f.buffer_mut(),
+                                line,
+                            );
                         }
                     } else {
                         let (summary_left, show_context) = single_line_footer_layout(
@@ -1299,6 +1312,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1317,6 +1331,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1335,6 +1350,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1353,6 +1369,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1371,6 +1388,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1389,6 +1407,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1407,6 +1426,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1425,6 +1445,7 @@ mod tests {
                 context_window_percent: Some(72),
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1443,6 +1464,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1461,6 +1483,7 @@ mod tests {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 status_line_value: None,
+                status_hud_lines: Vec::new(),
                 status_line_enabled: false,
                 active_agent_label: None,
             },
@@ -1477,6 +1500,7 @@ mod tests {
             context_window_percent: None,
             context_window_used_tokens: None,
             status_line_value: None,
+            status_hud_lines: Vec::new(),
             status_line_enabled: false,
             active_agent_label: None,
         };
@@ -1506,6 +1530,7 @@ mod tests {
             context_window_percent: None,
             context_window_used_tokens: None,
             status_line_value: None,
+            status_hud_lines: Vec::new(),
             status_line_enabled: false,
             active_agent_label: None,
         };
@@ -1528,6 +1553,7 @@ mod tests {
             context_window_percent: None,
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: None,
         };
@@ -1545,6 +1571,7 @@ mod tests {
             context_window_percent: None,
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: None,
         };
@@ -1562,6 +1589,7 @@ mod tests {
             context_window_percent: None,
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: None,
         };
@@ -1579,6 +1607,7 @@ mod tests {
             context_window_percent: Some(50),
             context_window_used_tokens: None,
             status_line_value: None, // command timed out / empty
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: None,
         };
@@ -1601,6 +1630,7 @@ mod tests {
             context_window_percent: Some(50),
             context_window_used_tokens: None,
             status_line_value: None,
+            status_hud_lines: Vec::new(),
             status_line_enabled: false,
             active_agent_label: None,
         };
@@ -1623,6 +1653,7 @@ mod tests {
             context_window_percent: Some(50),
             context_window_used_tokens: None,
             status_line_value: None,
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: None,
         };
@@ -1648,6 +1679,7 @@ mod tests {
             status_line_value: Some(Line::from(
                 "Status line content that should truncate before the mode indicator".to_string(),
             )),
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: None,
         };
@@ -1670,6 +1702,7 @@ mod tests {
             context_window_percent: None,
             context_window_used_tokens: None,
             status_line_value: None,
+            status_hud_lines: Vec::new(),
             status_line_enabled: false,
             active_agent_label: Some("Robie [explorer]".to_string()),
         };
@@ -1687,6 +1720,7 @@ mod tests {
             context_window_percent: None,
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: Some("Robie [explorer]".to_string()),
         };
@@ -1710,6 +1744,7 @@ mod tests {
                 "Status line content that is definitely too long to fit alongside the mode label"
                     .to_string(),
             )),
+            status_hud_lines: Vec::new(),
             status_line_enabled: true,
             active_agent_label: None,
         };

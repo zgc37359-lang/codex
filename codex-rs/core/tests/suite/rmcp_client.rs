@@ -258,15 +258,15 @@ async fn stdio_mcp_parallel_tool_calls_default_false_runs_serially() -> anyhow::
     let first_call_id = "sync-serial-1";
     let second_call_id = "sync-serial-2";
     let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__sync");
+    let namespace = format!("mcp__{server_name}__");
     let args = json!({ "sleep_after_ms": 100 }).to_string();
 
     mount_sse_once(
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(first_call_id, &tool_name, &args),
-            responses::ev_function_call(second_call_id, &tool_name, &args),
+            responses::ev_function_call_with_namespace(first_call_id, &namespace, "sync", &args),
+            responses::ev_function_call_with_namespace(second_call_id, &namespace, "sync", &args),
             responses::ev_completed("resp-1"),
         ]),
     )
@@ -400,7 +400,7 @@ async fn stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently() -> anyhow::Res
     let first_call_id = "sync-1";
     let second_call_id = "sync-2";
     let server_name = "rmcp";
-    let tool_name = format!("mcp__{server_name}__sync");
+    let namespace = format!("mcp__{server_name}__");
     let args = json!({
         "sleep_after_ms": 100,
         "barrier": {
@@ -415,8 +415,8 @@ async fn stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently() -> anyhow::Res
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
-            responses::ev_function_call(first_call_id, &tool_name, &args),
-            responses::ev_function_call(second_call_id, &tool_name, &args),
+            responses::ev_function_call_with_namespace(first_call_id, &namespace, "sync", &args),
+            responses::ev_function_call_with_namespace(second_call_id, &namespace, "sync", &args),
             responses::ev_completed("resp-1"),
         ]),
     )

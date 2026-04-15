@@ -1118,8 +1118,9 @@ impl PluginsManager {
                 if let Err(err) = std::thread::Builder::new()
                     .name("plugins-marketplace-auto-upgrade".to_string())
                     .spawn(move || {
-                        let outcome =
-                            manager.upgrade_configured_marketplaces_for_config(&config, None);
+                        let outcome = manager.upgrade_configured_marketplaces_for_config(
+                            &config, /*marketplace_name*/ None,
+                        );
                         match outcome {
                             Ok(outcome) => {
                                 for error in outcome.errors {

@@ -314,7 +314,11 @@ mod tests {
         );
 
         let config = load_plugins_config(codex_home.path()).await;
-        let outcome = upgrade_configured_git_marketplaces(codex_home.path(), &config, None);
+        let outcome = upgrade_configured_git_marketplaces(
+            codex_home.path(),
+            &config,
+            /*marketplace_name*/ None,
+        );
 
         assert_eq!(
             outcome,
@@ -349,14 +353,24 @@ mod tests {
         let revision = git_output(source_repo.path(), &["rev-parse", "HEAD"]);
         let installed_root = marketplace_install_root(codex_home.path()).join("debug");
         write_marketplace_repo(&installed_root, "debug", "old");
-        write_installed_metadata(&installed_root, source_repo.path(), None, &[], &revision);
+        write_installed_metadata(
+            &installed_root,
+            source_repo.path(),
+            /*ref_name*/ None,
+            &[],
+            &revision,
+        );
         write_file(
             &codex_home.path().join(CONFIG_TOML_FILE),
             &marketplace_config(source_repo.path(), &revision),
         );
 
         let config = load_plugins_config(codex_home.path()).await;
-        let outcome = upgrade_configured_git_marketplaces(codex_home.path(), &config, None);
+        let outcome = upgrade_configured_git_marketplaces(
+            codex_home.path(),
+            &config,
+            /*marketplace_name*/ None,
+        );
 
         assert_eq!(
             outcome,
@@ -381,14 +395,24 @@ mod tests {
         let revision = git_output(source_repo.path(), &["rev-parse", "HEAD"]);
         let installed_root = marketplace_install_root(codex_home.path()).join("debug");
         write_marketplace_repo(&installed_root, "debug", "old");
-        write_installed_metadata(&installed_root, source_repo.path(), None, &[], &revision);
+        write_installed_metadata(
+            &installed_root,
+            source_repo.path(),
+            /*ref_name*/ None,
+            &[],
+            &revision,
+        );
         write_file(
             &codex_home.path().join(CONFIG_TOML_FILE),
             &marketplace_config_with_ref(source_repo.path(), &revision, &revision),
         );
 
         let config = load_plugins_config(codex_home.path()).await;
-        let outcome = upgrade_configured_git_marketplaces(codex_home.path(), &config, None);
+        let outcome = upgrade_configured_git_marketplaces(
+            codex_home.path(),
+            &config,
+            /*marketplace_name*/ None,
+        );
 
         assert_eq!(
             outcome,
@@ -423,7 +447,11 @@ mod tests {
         );
 
         let config = load_plugins_config(codex_home.path()).await;
-        let outcome = upgrade_configured_git_marketplaces(codex_home.path(), &config, None);
+        let outcome = upgrade_configured_git_marketplaces(
+            codex_home.path(),
+            &config,
+            /*marketplace_name*/ None,
+        );
 
         assert_eq!(outcome.selected_marketplaces, vec!["debug".to_string()]);
         assert!(outcome.upgraded_roots.is_empty());
@@ -447,7 +475,11 @@ mod tests {
         );
 
         let config = load_plugins_config(codex_home.path()).await;
-        let outcome = upgrade_configured_git_marketplaces(codex_home.path(), &config, None);
+        let outcome = upgrade_configured_git_marketplaces(
+            codex_home.path(),
+            &config,
+            /*marketplace_name*/ None,
+        );
 
         assert_eq!(outcome.selected_marketplaces, vec!["debug".to_string()]);
         assert!(outcome.upgraded_roots.is_empty());
@@ -480,7 +512,11 @@ mod tests {
             &marketplace_config(changed_source_repo.path(), "changed-revision"),
         );
 
-        let outcome = upgrade_configured_git_marketplaces(codex_home.path(), &config, None);
+        let outcome = upgrade_configured_git_marketplaces(
+            codex_home.path(),
+            &config,
+            /*marketplace_name*/ None,
+        );
 
         assert_eq!(outcome.selected_marketplaces, vec!["debug".to_string()]);
         assert!(outcome.upgraded_roots.is_empty());
@@ -507,7 +543,11 @@ plugins = true
         );
 
         let config = load_plugins_config(codex_home.path()).await;
-        let outcome = upgrade_configured_git_marketplaces(codex_home.path(), &config, None);
+        let outcome = upgrade_configured_git_marketplaces(
+            codex_home.path(),
+            &config,
+            /*marketplace_name*/ None,
+        );
 
         assert_eq!(
             outcome,

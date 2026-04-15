@@ -4,6 +4,8 @@
 //! behavior easier to review without paging through the rest of `chatwidget.rs`.
 
 use super::*;
+use crate::terminal_palette::best_color;
+use ratatui::text::Span;
 
 /// Items shown in the terminal title when the user has not configured a
 /// custom selection. Intentionally minimal: spinner + project name.
@@ -51,6 +53,35 @@ impl StatusSurfaceSelections {
                 .terminal_title_items
                 .contains(&TerminalTitleItem::GitBranch)
     }
+}
+
+const HUD_CONTEXT_BAR_WIDTH: usize = 10;
+const HUD_LIMIT_BAR_WIDTH: usize = 8;
+const HUD_MODEL_MAX_CHARS: usize = 24;
+const HUD_THREAD_MAX_CHARS: usize = 24;
+const HUD_PROJECT_MAX_CHARS: usize = 18;
+const HUD_BRANCH_MAX_CHARS: usize = 18;
+const HUD_SKY: (u8, u8, u8) = (56, 189, 248);
+const HUD_MINT: (u8, u8, u8) = (16, 240, 132);
+const HUD_GOLD: (u8, u8, u8) = (254, 240, 60);
+const HUD_VIOLET: (u8, u8, u8) = (197, 132, 255);
+const HUD_AMBER: (u8, u8, u8) = (255, 171, 27);
+const HUD_ROSE: (u8, u8, u8) = (255, 96, 128);
+const HUD_CORAL: (u8, u8, u8) = (255, 140, 80);
+const HUD_SLATE: (u8, u8, u8) = (148, 163, 184);
+const HUD_MUTED: (u8, u8, u8) = (100, 116, 139);
+const HUD_ACTIVE_INTERVAL: Duration = Duration::from_millis(140);
+const HUD_IDLE_INTERVAL: Duration = Duration::from_millis(1_000);
+const HUD_LIVE_SPINNER_FRAMES: [&str; 4] = ["/", "-", "\\", "|"];
+const HUD_LIVE_PULSE_FRAMES: [&str; 4] = [".", "o", "O", "o"];
+
+/// Resolve an RGB tuple to a terminal-appropriate `Color`.
+///
+/// On Windows Terminal, this promotes to TrueColor even when `COLORTERM` is not
+/// set, because `supports-color` misreports the terminal's capabilities.
+#[inline]
+fn hud_color(rgb: (u8, u8, u8)) -> Color {
+    best_color(rgb)
 }
 
 /// Cached project-root display name keyed by the cwd used for the last lookup.
@@ -120,7 +151,7 @@ impl ChatWidget {
     }
 
     fn sync_status_surface_shared_state(&mut self, selections: &StatusSurfaceSelections) {
-        if !selections.uses_git_branch() {
+        if !self.status_surface_needs_git_branch(selections) {
             self.status_line_branch = None;
             self.status_line_branch_pending = false;
             self.status_line_branch_lookup_complete = false;
@@ -139,6 +170,7 @@ impl ChatWidget {
         self.bottom_pane.set_status_line_enabled(enabled);
         if !enabled {
             self.set_status_line(/*status_line*/ None);
+            self.set_status_hud_lines(Vec::new());
             return;
         }
 
@@ -151,10 +183,492 @@ impl ChatWidget {
 
         let line = if parts.is_empty() {
             None
+        } else if self.config.tui_status_line.is_none() {
+            None
         } else {
-            Some(Line::from(parts.join(" · ")))
+            Some(Line::from(parts.join(" | ")))
         };
         self.set_status_line(line);
+        self.set_status_hud_lines(self.status_hud_lines());
+    }
+
+    fn status_surface_needs_git_branch(&self, selections: &StatusSurfaceSelections) -> bool {
+        !selections.status_line_items.is_empty() || selections.uses_git_branch()
+    }
+
+    fn status_hud_lines(&self) -> Vec<Line<'static>> {
+        let mut sections = Vec::new();
+        if let Some(line) = self.status_hud_mode_line() {
+            sections.push((HUD_SKY, line));
+        }
+        if let Some(line) = self.status_hud_session_line() {
+            sections.push((HUD_VIOLET, line));
+        }
+        if let Some(line) = self.status_hud_usage_line() {
+            sections.push((HUD_MINT, line));
+        }
+        if let Some(line) = self.status_hud_activity_line() {
+            sections.push((HUD_CORAL, line));
+        }
+        let total = sections.len();
+        sections
+            .into_iter()
+            .enumerate()
+            .map(|(index, (accent, line))| {
+                self.status_hud_panel_line(index, total, accent, line)
+            })
+            .collect()
+    }
+
+    fn status_hud_mode_line(&self) -> Option<Line<'static>> {
+        let mut spans = Vec::new();
+        Self::hud_push_badge(
+            &mut spans,
+            "MODEL",
+            Self::truncate_terminal_title_part(
+                self.model_display_name().to_string(),
+                HUD_MODEL_MAX_CHARS,
+            ),
+            hud_color(HUD_SKY),
+        );
+        Self::hud_push_badge(
+            &mut spans,
+            "MIND",
+            Self::status_line_reasoning_effort_label(self.effective_reasoning_effort()),
+            hud_color(HUD_GOLD),
+        );
+        Self::hud_push_badge(
+            &mut spans,
+            "TIER",
+            self.status_hud_service_tier_segment(),
+            self.status_hud_tier_color(),
+        );
+        Self::hud_push_badge(
+            &mut spans,
+            "MODE",
+            self.active_mode_kind().display_name(),
+            hud_color(HUD_VIOLET),
+        );
+
+        let state = self.terminal_title_status_text();
+        Self::hud_push_badge(&mut spans, "STATE", state.clone(), Self::status_hud_status_color(&state));
+
+        if let Some(plan_type) = self.plan_type {
+            Self::hud_push_badge(
+                &mut spans,
+                "PLAN",
+                crate::status::plan_type_display_name(plan_type),
+                hud_color(HUD_MINT),
+            );
+        }
+
+        if let Some((completed, total)) = self.last_plan_progress {
+            Self::hud_push_badge(
+                &mut spans,
+                "TASKS",
+                format!("{completed}/{total}"),
+                hud_color(HUD_MINT),
+            );
+        }
+
+        (!spans.is_empty()).then(|| Line::from(spans))
+    }
+
+    fn status_hud_session_line(&self) -> Option<Line<'static>> {
+        let mut spans = Vec::new();
+        Self::hud_push_badge(&mut spans, "THREAD", self.status_hud_thread_display(), hud_color(HUD_VIOLET));
+        if let Some(forked_from) = self.forked_from {
+            Self::hud_push_badge(&mut spans, "FORK", Self::short_thread_id(forked_from), hud_color(HUD_CORAL));
+        }
+        Self::hud_push_badge(&mut spans, "SPACE", self.status_hud_workspace_display(), hud_color(HUD_SKY));
+        let (git_value, git_color) = self.status_hud_git_display();
+        Self::hud_push_badge(&mut spans, "GIT", git_value, git_color);
+        if let Some(mcp_summary) = self.status_hud_mcp_summary() {
+            Self::hud_push_badge(&mut spans, "MCP", mcp_summary, hud_color(HUD_MINT));
+        }
+
+        (!spans.is_empty()).then(|| Line::from(spans))
+    }
+
+    pub(crate) fn status_hud_usage_line(&self) -> Option<Line<'static>> {
+        let mut spans = Vec::new();
+        let used_tokens = self.status_line_context_usage().tokens_in_context_window();
+        if let Some(window_size) = self.status_line_context_window_size() {
+            let used_percent = self.status_line_context_used_percent().unwrap_or(0);
+            let context_color = Self::status_hud_meter_color(100.0f64 - used_percent as f64);
+            Self::hud_push_meter(
+                &mut spans,
+                "CONTEXT",
+                used_percent as f64,
+                HUD_CONTEXT_BAR_WIDTH,
+                context_color,
+                format!(
+                    "{used_percent}%  {}/{}",
+                    format_tokens_compact(used_tokens),
+                    format_tokens_compact(window_size),
+                ),
+            );
+        } else if used_tokens > 0 {
+            Self::hud_push_badge(
+                &mut spans,
+                "CONTEXT",
+                format!("{} used", format_tokens_compact(used_tokens)),
+                hud_color(HUD_MINT),
+            );
+        }
+
+        if let Some(io) = self.status_hud_io_segment() {
+            Self::hud_push_badge(&mut spans, "TOKENS", io, hud_color(HUD_SKY));
+        }
+        if let Some(credits) = self.status_hud_credits_segment() {
+            Self::hud_push_badge(&mut spans, "CREDITS", credits, hud_color(HUD_VIOLET));
+        }
+
+        (!spans.is_empty()).then(|| Line::from(spans))
+    }
+
+    fn status_hud_activity_line(&self) -> Option<Line<'static>> {
+        let mut spans = Vec::new();
+        let codex_limits = self.rate_limit_snapshots_by_limit_id.get("codex");
+        if let Some(window) = codex_limits.and_then(|limits| limits.primary.as_ref()) {
+            Self::hud_push_limit_meter(&mut spans, "5H", window);
+        } else {
+            Self::hud_push_badge(&mut spans, "5H", "sync", hud_color(HUD_GOLD));
+        }
+        if let Some(window) = codex_limits.and_then(|limits| limits.secondary.as_ref()) {
+            Self::hud_push_limit_meter(&mut spans, "WEEK", window);
+        } else {
+            Self::hud_push_badge(&mut spans, "WEEK", "sync", hud_color(HUD_VIOLET));
+        }
+
+        let total_processes = self.running_commands.len()
+            + self.unified_exec_processes.len()
+            + self.pending_collab_spawn_requests.len()
+            + self.collab_agent_metadata.len();
+        let process_label = if total_processes == 1 {
+            "process"
+        } else {
+            "processes"
+        };
+        Self::hud_push_badge(
+            &mut spans,
+            "",
+            format!("{} {}", total_processes, process_label),
+            if total_processes > 0 {
+                hud_color(HUD_AMBER)
+            } else {
+                hud_color(HUD_MUTED)
+            },
+        );
+
+        (!spans.is_empty()).then(|| Line::from(spans))
+    }
+
+    fn status_hud_service_tier_segment(&self) -> String {
+        if self.should_show_fast_status(self.current_model(), self.current_service_tier()) {
+            "fast".to_string()
+        } else if let Some(service_tier) = self.current_service_tier() {
+            service_tier.to_string()
+        } else {
+            "off".to_string()
+        }
+    }
+
+    fn status_hud_io_segment(&self) -> Option<String> {
+        let usage = self.status_line_total_usage();
+        if usage.input_tokens <= 0
+            && usage.output_tokens <= 0
+            && usage.reasoning_output_tokens <= 0
+        {
+            return None;
+        }
+
+        Some(format!(
+            "{} in  {} out  {} reason",
+            format_tokens_compact(usage.input_tokens),
+            format_tokens_compact(usage.output_tokens),
+            format_tokens_compact(usage.reasoning_output_tokens),
+        ))
+    }
+
+    fn status_hud_credits_segment(&self) -> Option<String> {
+        let credits = self
+            .rate_limit_snapshots_by_limit_id
+            .get("codex")
+            .and_then(|limits| limits.credits.as_ref())?;
+
+        if !credits.has_credits {
+            return None;
+        }
+
+        if credits.unlimited {
+            return Some("unlimited".to_string());
+        }
+
+        credits.balance.clone()
+    }
+
+    fn status_hud_mcp_summary(&self) -> Option<String> {
+        let current = self.mcp_startup_status.as_ref()?;
+        if current.is_empty() {
+            return None;
+        }
+
+        let mut ready = 0usize;
+        let mut starting = 0usize;
+        let mut failed = 0usize;
+        let mut cancelled = 0usize;
+        for status in current.values() {
+            match status {
+                McpStartupStatus::Starting => starting += 1,
+                McpStartupStatus::Ready => ready += 1,
+                McpStartupStatus::Failed { .. } => failed += 1,
+                McpStartupStatus::Cancelled => cancelled += 1,
+            }
+        }
+
+        let total = current.len();
+        Some(if failed > 0 {
+            format!("{ready}/{total} ready  {failed} failed")
+        } else if cancelled > 0 {
+            format!("{ready}/{total} ready  {cancelled} cancelled")
+        } else if starting > 0 {
+            format!("{ready}/{total} ready  {starting} starting")
+        } else {
+            format!("{ready}/{total} ready")
+        })
+    }
+
+    fn status_hud_thread_display(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(thread_name) = self.thread_name.as_ref().map(|name| name.trim())
+            && !thread_name.is_empty()
+        {
+            parts.push(Self::truncate_terminal_title_part(
+                thread_name.to_string(),
+                HUD_THREAD_MAX_CHARS,
+            ));
+        }
+        if let Some(thread_id) = self.thread_id {
+            parts.push(Self::short_thread_id(thread_id));
+        }
+        if parts.is_empty() {
+            "fresh".to_string()
+        } else {
+            parts.join(" · ")
+        }
+    }
+
+    fn status_hud_workspace_display(&self) -> String {
+        let cwd = format_directory_display(self.status_line_cwd(), Some(24));
+        let Some(project) = self.status_line_project_root_name_for_cwd(self.status_line_cwd()) else {
+            return cwd;
+        };
+        let project = Self::truncate_terminal_title_part(project, HUD_PROJECT_MAX_CHARS);
+        if project == cwd {
+            cwd
+        } else {
+            Self::truncate_terminal_title_part(format!("{project} @ {cwd}"), 30)
+        }
+    }
+
+    fn status_hud_git_display(&self) -> (String, Color) {
+        if let Some(branch) = self.status_line_branch.as_ref() {
+            return (
+                Self::truncate_terminal_title_part(branch.clone(), HUD_BRANCH_MAX_CHARS),
+                hud_color(HUD_MINT),
+            );
+        }
+        if self.status_line_branch_pending {
+            return ("scanning".to_string(), hud_color(HUD_GOLD));
+        }
+        if self.status_line_branch_lookup_complete {
+            return ("no-repo".to_string(), hud_color(HUD_SLATE));
+        }
+        ("standby".to_string(), hud_color(HUD_SLATE))
+    }
+
+    fn status_hud_tier_color(&self) -> Color {
+        if self.should_show_fast_status(self.current_model(), self.current_service_tier()) {
+            hud_color(HUD_MINT)
+        } else if self.current_service_tier().is_some() {
+            hud_color(HUD_VIOLET)
+        } else {
+            hud_color(HUD_SLATE)
+        }
+    }
+
+    fn status_hud_status_color(status: &str) -> Color {
+        match status {
+            "Ready" => hud_color(HUD_MINT),
+            "Working" => hud_color(HUD_SKY),
+            "Waiting" => hud_color(HUD_VIOLET),
+            "Undoing" => hud_color(HUD_CORAL),
+            "Starting" => hud_color(HUD_GOLD),
+            "Thinking" => hud_color(HUD_GOLD),
+            _ => hud_color(HUD_SLATE),
+        }
+    }
+
+    fn status_hud_meter_color(remaining_percent: f64) -> Color {
+        if remaining_percent >= 60.0 {
+            hud_color(HUD_MINT)
+        } else if remaining_percent >= 25.0 {
+            hud_color(HUD_GOLD)
+        } else {
+            hud_color(HUD_ROSE)
+        }
+    }
+
+    fn status_hud_panel_line(
+        &self,
+        index: usize,
+        total: usize,
+        accent: (u8, u8, u8),
+        content: Line<'static>,
+    ) -> Line<'static> {
+        let mut spans = Vec::new();
+        let border = if total <= 1 {
+            "•"
+        } else if index == 0 {
+            "┌"
+        } else if index + 1 == total {
+            "└"
+        } else {
+            "│"
+        };
+        spans.push(Span::styled(
+            border,
+            Style::default().fg(hud_color(accent)).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+
+        if index == 0 {
+            spans.push(Span::styled(
+                self.status_hud_live_marker(),
+                Style::default()
+                    .fg(Self::status_hud_status_color(&self.terminal_title_status_text()))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(" "));
+        }
+
+        spans.extend(content.spans);
+        Line::from(spans)
+    }
+
+    fn status_hud_live_marker(&self) -> &'static str {
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.terminal_title_animation_origin);
+        if self.terminal_title_has_active_progress() {
+            let frame_index = (elapsed.as_millis() / HUD_ACTIVE_INTERVAL.as_millis()) as usize;
+            HUD_LIVE_SPINNER_FRAMES[frame_index % HUD_LIVE_SPINNER_FRAMES.len()]
+        } else {
+            let frame_index = (elapsed.as_millis() / HUD_IDLE_INTERVAL.as_millis()) as usize;
+            HUD_LIVE_PULSE_FRAMES[frame_index % HUD_LIVE_PULSE_FRAMES.len()]
+        }
+    }
+
+    pub(super) fn should_animate_status_hud(&self) -> bool {
+        self.config.animations && !self.configured_status_line_items().is_empty()
+    }
+
+    pub(super) fn status_hud_animation_interval(&self) -> Duration {
+        if self.terminal_title_has_active_progress() {
+            HUD_ACTIVE_INTERVAL
+        } else {
+            HUD_IDLE_INTERVAL
+        }
+    }
+
+    fn hud_push_badge(
+        spans: &mut Vec<Span<'static>>,
+        label: &str,
+        value: impl Into<String>,
+        color: Color,
+    ) {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" › ", Style::default().fg(color).add_modifier(Modifier::BOLD)));
+        }
+        spans.push(Self::hud_label_span(label, color));
+        spans.push(Self::hud_value_span(value, color));
+    }
+
+    fn hud_push_meter(
+        spans: &mut Vec<Span<'static>>,
+        label: &str,
+        percent: f64,
+        width: usize,
+        color: Color,
+        summary: impl Into<String>,
+    ) {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" › ", Style::default().fg(color).add_modifier(Modifier::BOLD)));
+        }
+        spans.push(Self::hud_label_span(label, color));
+        Self::hud_push_bar(spans, percent, width, color);
+        spans.push(Span::styled(" ", Style::default().fg(color)));
+        spans.push(Self::hud_value_span(summary, color));
+    }
+
+    fn hud_push_limit_meter(
+        spans: &mut Vec<Span<'static>>,
+        label: &str,
+        window: &RateLimitWindowDisplay,
+    ) {
+        let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
+        let color = Self::status_hud_meter_color(remaining);
+        let summary = if let Some(resets_at) = window.resets_at.as_deref() {
+            format!("{remaining:.0}% @{resets_at}")
+        } else {
+            format!("{remaining:.0}%")
+        };
+        Self::hud_push_meter(spans, label, remaining, HUD_LIMIT_BAR_WIDTH, color, summary);
+    }
+
+    fn hud_push_bar(
+        spans: &mut Vec<Span<'static>>,
+        percent: f64,
+        width: usize,
+        color: Color,
+    ) {
+        let clamped = percent.clamp(0.0, 100.0);
+        let filled = ((clamped / 100.0) * width as f64).round() as usize;
+        let filled = filled.min(width);
+        let empty = width.saturating_sub(filled);
+        spans.push(Span::styled("[", Style::default().fg(hud_color(HUD_MUTED))));
+        if filled > 0 {
+            spans.push(Span::styled(
+                "█".repeat(filled),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if empty > 0 {
+            spans.push(Span::styled("░".repeat(empty), Style::default().fg(hud_color(HUD_MUTED))));
+        }
+        spans.push(Span::styled("]", Style::default().fg(hud_color(HUD_MUTED))));
+    }
+
+    fn hud_label_span(label: &str, color: Color) -> Span<'static> {
+        Span::styled(
+            format!("{} ", label.to_lowercase()),
+            Style::default()
+                .fg(color)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+
+    fn hud_value_span(value: impl Into<String>, color: Color) -> Span<'static> {
+        Span::styled(
+            value.into(),
+            Style::default()
+                .fg(color)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+
+    fn short_thread_id(thread_id: ThreadId) -> String {
+        thread_id.to_string().chars().take(8).collect()
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.
@@ -264,7 +778,7 @@ impl ChatWidget {
 
     pub(super) fn request_status_line_branch_refresh(&mut self) {
         let selections = self.status_surface_selections();
-        if !selections.uses_git_branch() {
+        if !self.status_surface_needs_git_branch(&selections) {
             return;
         }
         let cwd = self.status_line_cwd().to_path_buf();
@@ -450,7 +964,7 @@ impl ChatWidget {
                     Some(format!("{} used", format_tokens_compact(total)))
                 }
             }
-            StatusLineItem::ContextRemaining | StatusLineItem::ContextRemainingPercent => self
+            StatusLineItem::ContextRemaining => self
                 .status_line_context_remaining_percent()
                 .map(|remaining| format!("Context {remaining}% left")),
             StatusLineItem::ContextUsed => self

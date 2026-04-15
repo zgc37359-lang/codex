@@ -42,6 +42,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use url::Url;
+
 use self::realtime::PendingSteerCompareKey;
 use crate::app_command::AppCommand;
 use crate::app_event::RealtimeAudioDeviceKind;
@@ -60,6 +62,7 @@ use crate::legacy_core::config::Constrained;
 use crate::legacy_core::config::ConstraintResult;
 use crate::legacy_core::config_loader::ConfigLayerStackOrdering;
 use crate::legacy_core::find_thread_name_by_id;
+use crate::legacy_core::plugins::PluginsManager;
 use crate::legacy_core::skills::model::SkillMetadata;
 #[cfg(target_os = "windows")]
 use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -798,7 +801,7 @@ pub(crate) struct ChatWidget {
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
-    skills_initial_state: Option<HashMap<AbsolutePathBuf, bool>>,
+    skills_initial_state: Option<HashMap<PathBuf, bool>>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
     turn_sleep_inhibitor: SleepInhibitor,
@@ -940,7 +943,7 @@ pub(crate) struct ChatWidget {
     // Current working directory (if known)
     current_cwd: Option<PathBuf>,
     // Instruction source files loaded for the current session, supplied by app-server.
-    instruction_source_paths: Vec<AbsolutePathBuf>,
+    instruction_source_paths: Vec<PathBuf>,
     // Runtime network proxy bind addresses from SessionConfigured.
     session_network_proxy: Option<codex_protocol::protocol::SessionNetworkProxyRuntime>,
     // Shared latch so we only warn once about invalid status-line item IDs.
@@ -1368,7 +1371,6 @@ fn app_server_request_id_to_mcp_request_id(
 
 fn exec_approval_request_from_params(
     params: CommandExecutionRequestApprovalParams,
-    fallback_cwd: &AbsolutePathBuf,
 ) -> ExecApprovalRequestEvent {
     ExecApprovalRequestEvent {
         call_id: params.item_id,
@@ -1377,7 +1379,7 @@ fn exec_approval_request_from_params(
             .as_deref()
             .map(split_command_string)
             .unwrap_or_default(),
-        cwd: params.cwd.unwrap_or_else(|| fallback_cwd.clone()),
+        cwd: params.cwd.unwrap_or_default(),
         reason: params.reason,
         network_approval_context: params
             .network_approval_context
@@ -1822,6 +1824,11 @@ impl ChatWidget {
         self.bottom_pane.set_status_line(status_line);
     }
 
+    /// Sets additional contextual HUD rows rendered under the footer status line.
+    pub(crate) fn set_status_hud_lines(&mut self, status_hud_lines: Vec<Line<'static>>) {
+        self.bottom_pane.set_status_hud_lines(status_hud_lines);
+    }
+
     /// Forwards the contextual active-agent label into the bottom-pane footer pipeline.
     ///
     /// `ChatWidget` stays a pass-through here so `App` remains the owner of "which thread is the
@@ -1971,8 +1978,13 @@ impl ChatWidget {
         self.thread_name = event.thread_name.clone();
         self.forked_from = event.forked_from_id;
         self.current_rollout_path = event.rollout_path.clone();
-        self.current_cwd = Some(event.cwd.to_path_buf());
-        self.config.cwd = event.cwd.clone();
+        self.current_cwd = Some(event.cwd.clone());
+        match AbsolutePathBuf::try_from(event.cwd.clone()) {
+            Ok(cwd) => self.config.cwd = cwd,
+            Err(err) => {
+                tracing::warn!(path = %event.cwd.display(), %err, "session cwd should be absolute");
+            }
+        }
         if let Err(err) = self
             .config
             .permissions
@@ -2033,7 +2045,10 @@ impl ChatWidget {
             self.replay_initial_messages(messages);
         }
         self.saw_copy_source_this_turn = false;
-        self.refresh_skills_for_current_cwd(/*force_reload*/ true);
+        self.submit_op(AppCommand::list_skills(
+            Vec::new(),
+            /*force_reload*/ true,
+        ));
         if self.connectors_enabled() {
             self.prefetch_connectors();
         }
@@ -2183,9 +2198,18 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    #[cfg(test)]
     fn on_agent_message(&mut self, message: String) {
         self.finalize_completed_assistant_message(Some(&message));
+    }
+
+    fn on_context_compacted(&mut self) {
+        self.flush_answer_stream_with_separator();
+        self.handle_stream_finished();
+        self.add_to_history(history_cell::new_info_event(
+            "Context compacted".to_owned(),
+            /*hint*/ None,
+        ));
+        self.request_redraw();
     }
 
     fn on_agent_message_delta(&mut self, delta: String) {
@@ -2640,7 +2664,7 @@ impl ChatWidget {
             return None;
         }
 
-        Some(info.total_token_usage.tokens_in_context_window())
+        Some(info.last_token_usage.tokens_in_context_window())
     }
 
     fn restore_pre_review_token_info(&mut self) {
@@ -3413,42 +3437,6 @@ impl ChatWidget {
             return;
         }
 
-        if ev.status == GuardianAssessmentStatus::TimedOut {
-            let cell = if let Some(command) = guardian_command(&ev.action) {
-                history_cell::new_approval_decision_cell(
-                    command,
-                    codex_protocol::protocol::ReviewDecision::TimedOut,
-                    history_cell::ApprovalDecisionActor::Guardian,
-                )
-            } else {
-                match &ev.action {
-                    GuardianAssessmentAction::ApplyPatch { files, .. } => {
-                        let files = files
-                            .iter()
-                            .map(|path| path.display().to_string())
-                            .collect::<Vec<_>>();
-                        history_cell::new_guardian_timed_out_patch_request(files)
-                    }
-                    GuardianAssessmentAction::McpToolCall {
-                        server, tool_name, ..
-                    } => history_cell::new_guardian_timed_out_action_request(format!(
-                        "codex could call MCP tool {server}.{tool_name}"
-                    )),
-                    GuardianAssessmentAction::NetworkAccess { target, .. } => {
-                        history_cell::new_guardian_timed_out_action_request(format!(
-                            "codex could access {target}"
-                        ))
-                    }
-                    GuardianAssessmentAction::Command { .. } => unreachable!(),
-                    GuardianAssessmentAction::Execve { .. } => unreachable!(),
-                }
-            };
-
-            self.add_boxed_history(cell);
-            self.request_redraw();
-            return;
-        }
-
         if ev.status != GuardianAssessmentStatus::Denied {
             return;
         }
@@ -3623,10 +3611,15 @@ impl ChatWidget {
 
     fn on_image_generation_end(&mut self, event: ImageGenerationEndEvent) {
         self.flush_answer_stream_with_separator();
+        let saved_path = event.saved_path.map(|saved_path| {
+            Url::from_file_path(Path::new(&saved_path))
+                .map(|url| url.to_string())
+                .unwrap_or(saved_path)
+        });
         self.add_to_history(history_cell::new_image_generation_call(
             event.call_id,
             event.revised_prompt,
-            event.saved_path,
+            saved_path,
         ));
         self.request_redraw();
     }
@@ -4197,8 +4190,14 @@ impl ChatWidget {
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         self.bottom_pane.pre_draw_tick();
-        if self.should_animate_terminal_title_spinner() {
-            self.refresh_terminal_title();
+        let animate_title = self.should_animate_terminal_title_spinner();
+        let animate_hud = self.should_animate_status_hud();
+        if animate_title || animate_hud {
+            self.refresh_status_surfaces();
+        }
+        if animate_hud {
+            self.frame_requester
+                .schedule_frame_in(self.status_hud_animation_interval());
         }
     }
 
@@ -4524,7 +4523,7 @@ impl ChatWidget {
             id: ev.call_id,
             reason: ev.reason,
             changes: ev.changes.clone(),
-            cwd: self.config.cwd.clone(),
+            cwd: self.config.cwd.to_path_buf(),
         };
         self.bottom_pane
             .push_approval_request(request, &self.config.features);
@@ -4577,14 +4576,10 @@ impl ChatWidget {
 
     pub(crate) fn handle_request_user_input_now(&mut self, ev: RequestUserInputEvent) {
         self.flush_answer_stream_with_separator();
-        let question_count = ev.questions.len();
-        let summary = Notification::user_input_request_summary(&ev.questions);
-        let title = match (question_count, summary.as_deref()) {
-            (1, Some(summary)) => summary.to_string(),
-            (1, None) => "Question requested".to_string(),
-            (count, _) => format!("{count} questions requested"),
-        };
-        self.notify(Notification::PlanModePrompt { title });
+        self.notify(Notification::UserInputRequested {
+            question_count: ev.questions.len(),
+            summary: Notification::user_input_request_summary(&ev.questions),
+        });
         self.bottom_pane.push_user_input_request(ev);
         self.request_redraw();
     }
@@ -4718,6 +4713,14 @@ impl ChatWidget {
 
     pub(crate) fn new_with_app_event(common: ChatWidgetInit) -> Self {
         Self::new_with_op_target(common, CodexOpTarget::AppEvent)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn new_with_op_sender(
+        common: ChatWidgetInit,
+        codex_op_tx: UnboundedSender<Op>,
+    ) -> Self {
+        Self::new_with_op_target(common, CodexOpTarget::Direct(codex_op_tx))
     }
 
     fn new_with_op_target(common: ChatWidgetInit, codex_op_target: CodexOpTarget) -> Self {
@@ -5366,7 +5369,7 @@ impl ChatWidget {
             .map(|binding| binding.mention.clone())
             .collect();
         let mut skill_names_lower: HashSet<String> = HashSet::new();
-        let mut selected_skill_paths: HashSet<AbsolutePathBuf> = HashSet::new();
+        let mut selected_skill_paths: HashSet<PathBuf> = HashSet::new();
         let mut selected_plugin_ids: HashSet<String> = HashSet::new();
 
         if let Some(skills) = self.bottom_pane.skills() {
@@ -5388,7 +5391,7 @@ impl ChatWidget {
                 {
                     items.push(UserInput::Skill {
                         name: skill.name.clone(),
-                        path: skill.path_to_skills_md.to_path_buf(),
+                        path: skill.path_to_skills_md.clone(),
                     });
                 }
             }
@@ -5402,7 +5405,7 @@ impl ChatWidget {
                 }
                 items.push(UserInput::Skill {
                     name: skill.name.clone(),
-                    path: skill.path_to_skills_md.to_path_buf(),
+                    path: skill.path_to_skills_md.clone(),
                 });
             }
         }
@@ -5909,7 +5912,10 @@ impl ChatWidget {
                 });
             }
             ThreadItem::ImageView { id, path } => {
-                self.on_view_image_tool_call(ViewImageToolCallEvent { call_id: id, path });
+                self.on_view_image_tool_call(ViewImageToolCallEvent {
+                    call_id: id,
+                    path: path.into(),
+                });
             }
             ThreadItem::ImageGeneration {
                 id,
@@ -5935,7 +5941,7 @@ impl ChatWidget {
                 self.exit_review_mode_after_item();
             }
             ThreadItem::ContextCompaction { .. } => {
-                self.add_info_message("Context compacted".to_string(), /*hint*/ None);
+                self.on_agent_message("Context compacted".to_owned());
             }
             ThreadItem::HookPrompt { .. } => {}
             ThreadItem::CollabAgentToolCall {
@@ -5975,11 +5981,7 @@ impl ChatWidget {
         let id = request.id().to_string();
         match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
-                let fallback_cwd = self.config.cwd.clone();
-                self.on_exec_approval_request(
-                    id,
-                    exec_approval_request_from_params(params, &fallback_cwd),
-                );
+                self.on_exec_approval_request(id, exec_approval_request_from_params(params));
             }
             ServerRequest::FileChangeRequestApproval { params, .. } => {
                 self.on_apply_patch_approval_request(
@@ -6143,7 +6145,10 @@ impl ChatWidget {
                 }
             }
             ServerNotification::SkillsChanged(_) => {
-                self.refresh_skills_for_current_cwd(/*force_reload*/ true);
+                self.submit_op(AppCommand::list_skills(
+                    Vec::new(),
+                    /*force_reload*/ true,
+                ));
             }
             ServerNotification::ModelRerouted(_) => {}
             ServerNotification::DeprecationNotice(notification) => {
@@ -6256,12 +6261,11 @@ impl ChatWidget {
             | ServerNotification::FsChanged(_)
             | ServerNotification::FuzzyFileSearchSessionUpdated(_)
             | ServerNotification::FuzzyFileSearchSessionCompleted(_)
-            | ServerNotification::ThreadRealtimeTranscriptDelta(_)
-            | ServerNotification::ThreadRealtimeTranscriptDone(_)
+            | ServerNotification::ThreadRealtimeTranscriptUpdated(_)
             | ServerNotification::WindowsWorldWritableWarning(_)
             | ServerNotification::WindowsSandboxSetupCompleted(_)
             | ServerNotification::AccountLoginCompleted(_) => {}
-            ServerNotification::ContextCompacted(_) => {}
+            ServerNotification::ContextCompacted(_) => self.on_context_compacted(),
         }
     }
 
@@ -6715,7 +6719,10 @@ impl ChatWidget {
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
             EventMsg::ListSkillsResponse(ev) => self.on_list_skills(ev),
             EventMsg::SkillsUpdateAvailable => {
-                self.refresh_skills_for_current_cwd(/*force_reload*/ true);
+                self.submit_op(AppCommand::list_skills(
+                    Vec::new(),
+                    /*force_reload*/ true,
+                ));
             }
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
@@ -6743,7 +6750,7 @@ impl ChatWidget {
                 self.on_entered_review_mode(review_request, from_replay)
             }
             EventMsg::ExitedReviewMode(review) => self.on_exited_review_mode(review),
-            EventMsg::ContextCompacted(_) => {}
+            EventMsg::ContextCompacted(_) => self.on_context_compacted(),
             EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
                 call_id,
                 model,
@@ -7186,12 +7193,7 @@ impl ChatWidget {
         let Some(context_window) = self.status_line_context_window_size() else {
             return Some(100);
         };
-        let default_usage = TokenUsage::default();
-        let usage = self
-            .token_info
-            .as_ref()
-            .map(|info| &info.last_token_usage)
-            .unwrap_or(&default_usage);
+        let usage = self.status_line_context_usage();
         Some(
             usage
                 .percent_of_context_window_remaining(context_window)
@@ -7202,6 +7204,13 @@ impl ChatWidget {
     fn status_line_context_used_percent(&self) -> Option<i64> {
         let remaining = self.status_line_context_remaining_percent().unwrap_or(100);
         Some((100 - remaining).clamp(0, 100))
+    }
+
+    fn status_line_context_usage(&self) -> TokenUsage {
+        self.token_info
+            .as_ref()
+            .map(|info| info.last_token_usage.clone())
+            .unwrap_or_default()
     }
 
     fn status_line_total_usage(&self) -> TokenUsage {
@@ -10210,14 +10219,6 @@ impl ChatWidget {
     pub(crate) fn clear_esc_backtrack_hint(&mut self) {
         self.bottom_pane.clear_esc_backtrack_hint();
     }
-
-    fn refresh_skills_for_current_cwd(&mut self, force_reload: bool) {
-        self.submit_op(AppCommand::list_skills(
-            vec![self.config.cwd.to_path_buf()],
-            force_reload,
-        ));
-    }
-
     /// Forward a command directly to codex.
     pub(crate) fn submit_op<T>(&mut self, op: T) -> bool
     where
@@ -10358,14 +10359,11 @@ impl ChatWidget {
             return;
         }
 
-        self.app_event_tx.send(AppEvent::RefreshPluginMentions);
-    }
-
-    pub(crate) fn on_plugin_mentions_loaded(
-        &mut self,
-        plugins: Option<Vec<crate::legacy_core::plugins::PluginCapabilitySummary>>,
-    ) {
-        self.bottom_pane.set_plugin_mentions(plugins);
+        let plugins = PluginsManager::new(self.config.codex_home.clone())
+            .plugins_for_config(&self.config)
+            .capability_summaries()
+            .to_vec();
+        self.bottom_pane.set_plugin_mentions(Some(plugins));
     }
 
     pub(crate) fn sync_plugin_mentions_config(&mut self, config: &Config) {
@@ -10693,11 +10691,26 @@ impl Renderable for ChatWidget {
 
 #[derive(Debug)]
 enum Notification {
-    AgentTurnComplete { response: String },
-    ExecApprovalRequested { command: String },
-    EditApprovalRequested { cwd: PathBuf, changes: Vec<PathBuf> },
-    ElicitationRequested { server_name: String },
-    PlanModePrompt { title: String },
+    AgentTurnComplete {
+        response: String,
+    },
+    ExecApprovalRequested {
+        command: String,
+    },
+    EditApprovalRequested {
+        cwd: PathBuf,
+        changes: Vec<PathBuf>,
+    },
+    ElicitationRequested {
+        server_name: String,
+    },
+    PlanModePrompt {
+        title: String,
+    },
+    UserInputRequested {
+        question_count: usize,
+        summary: Option<String>,
+    },
 }
 
 impl Notification {
@@ -10730,6 +10743,14 @@ impl Notification {
             Notification::PlanModePrompt { title } => {
                 format!("Plan mode prompt: {title}")
             }
+            Notification::UserInputRequested {
+                question_count,
+                summary,
+            } => match (*question_count, summary.as_deref()) {
+                (1, Some(summary)) => format!("Question requested: {summary}"),
+                (1, None) => "Question requested".to_string(),
+                (count, _) => format!("Questions requested: {count}"),
+            },
         }
     }
 
@@ -10740,6 +10761,7 @@ impl Notification {
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. } => "approval-requested",
             Notification::PlanModePrompt { .. } => "plan-mode-prompt",
+            Notification::UserInputRequested { .. } => "user-input-requested",
         }
     }
 
@@ -10749,7 +10771,8 @@ impl Notification {
             Notification::ExecApprovalRequested { .. }
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. }
-            | Notification::PlanModePrompt { .. } => 1,
+            | Notification::PlanModePrompt { .. }
+            | Notification::UserInputRequested { .. } => 1,
         }
     }
 

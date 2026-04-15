@@ -296,12 +296,18 @@ mod tests {
             r#"{"name":"debug","plugins":[]}"#,
         )
         .unwrap();
-        fs::write(
-            codex_home.path().join(CONFIG_TOML_FILE),
-            format!(
-                "[marketplaces.debug]\nsource_type = \"local\"\nsource = \"{}\"\n",
-                source_root.display()
-            ),
+        let source_root = source_root.canonicalize().unwrap();
+        let source_root_display = source_root.display().to_string();
+        record_user_marketplace(
+            codex_home.path(),
+            "debug",
+            &MarketplaceConfigUpdate {
+                last_updated: "2026-04-10T00:00:00Z",
+                source_type: "local",
+                source: &source_root_display,
+                ref_name: None,
+                sparse_paths: &[],
+            },
         )
         .unwrap();
 

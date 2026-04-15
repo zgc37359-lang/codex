@@ -1,3 +1,11 @@
+use std::ffi::OsStr;
+use std::ffi::OsString;
+use std::fs::FileTimes;
+use std::fs::OpenOptions;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::SystemTime;
+
 use async_trait::async_trait;
 use chrono::DateTime;
 use chrono::Utc;
@@ -9,7 +17,11 @@ use codex_protocol::protocol::SessionSource;
 use codex_rollout::RolloutConfig;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::ThreadItem;
+use codex_rollout::find_archived_thread_path_by_id_str;
+use codex_rollout::find_thread_path_by_id_str;
 use codex_rollout::parse_cursor;
+use codex_rollout::read_thread_item_from_rollout;
+use codex_rollout::rollout_date_parts;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -35,10 +47,80 @@ pub struct LocalThreadStore {
     config: RolloutConfig,
 }
 
+/// A local archive operation whose rollout path has been resolved and validated.
+#[derive(Debug)]
+pub struct PreparedLocalThreadArchive {
+    config: RolloutConfig,
+    thread_id: codex_protocol::ThreadId,
+    canonical_rollout_path: PathBuf,
+    file_name: OsString,
+}
+
 impl LocalThreadStore {
     /// Create a local store from the rollout configuration used by existing local persistence.
     pub fn new(config: RolloutConfig) -> Self {
         Self { config }
+    }
+
+    /// Prepare to archive a local thread by resolving and validating its active rollout.
+    pub async fn prepare_archive_thread(
+        &self,
+        params: ArchiveThreadParams,
+    ) -> ThreadStoreResult<PreparedLocalThreadArchive> {
+        let thread_id = params.thread_id;
+        let rollout_path =
+            find_thread_path_by_id_str(self.config.codex_home.as_path(), &thread_id.to_string())
+                .await
+                .map_err(|err| ThreadStoreError::InvalidRequest {
+                    message: format!("failed to locate thread id {thread_id}: {err}"),
+                })?
+                .ok_or_else(|| ThreadStoreError::InvalidRequest {
+                    message: format!("no rollout found for thread id {thread_id}"),
+                })?;
+
+        let canonical_rollout_path = scoped_rollout_path(
+            self.config.codex_home.join(codex_rollout::SESSIONS_SUBDIR),
+            rollout_path.as_path(),
+            "sessions",
+        )?;
+        let file_name = matching_rollout_file_name(
+            canonical_rollout_path.as_path(),
+            thread_id,
+            rollout_path.as_path(),
+        )?;
+
+        Ok(PreparedLocalThreadArchive {
+            config: self.config.clone(),
+            thread_id,
+            canonical_rollout_path,
+            file_name,
+        })
+    }
+}
+
+impl PreparedLocalThreadArchive {
+    /// Move the prepared rollout into the archived collection.
+    pub async fn complete(self) -> ThreadStoreResult<()> {
+        let archive_folder = self
+            .config
+            .codex_home
+            .join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+        std::fs::create_dir_all(&archive_folder).map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to archive thread: {err}"),
+        })?;
+        let archived_path = archive_folder.join(&self.file_name);
+        std::fs::rename(&self.canonical_rollout_path, &archived_path).map_err(|err| {
+            ThreadStoreError::Internal {
+                message: format!("failed to archive thread: {err}"),
+            }
+        })?;
+
+        if let Some(ctx) = codex_rollout::state_db::get_state_db(&self.config).await {
+            let _ = ctx
+                .mark_archived(self.thread_id, archived_path.as_path(), Utc::now())
+                .await;
+        }
+        Ok(())
     }
 }
 
@@ -120,15 +202,93 @@ impl ThreadStore for LocalThreadStore {
         unsupported("update_thread_metadata")
     }
 
-    async fn archive_thread(&self, _params: ArchiveThreadParams) -> ThreadStoreResult<()> {
-        unsupported("archive_thread")
+    async fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreResult<()> {
+        self.prepare_archive_thread(params).await?.complete().await
     }
 
     async fn unarchive_thread(
         &self,
-        _params: ArchiveThreadParams,
+        params: ArchiveThreadParams,
     ) -> ThreadStoreResult<StoredThread> {
-        unsupported("unarchive_thread")
+        let thread_id = params.thread_id;
+        let archived_path = find_archived_thread_path_by_id_str(
+            self.config.codex_home.as_path(),
+            &thread_id.to_string(),
+        )
+        .await
+        .map_err(|err| ThreadStoreError::InvalidRequest {
+            message: format!("failed to locate archived thread id {thread_id}: {err}"),
+        })?
+        .ok_or_else(|| ThreadStoreError::InvalidRequest {
+            message: format!("no archived rollout found for thread id {thread_id}"),
+        })?;
+
+        let canonical_archived_path = scoped_rollout_path(
+            self.config
+                .codex_home
+                .join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR),
+            archived_path.as_path(),
+            "archived",
+        )?;
+        let file_name = matching_rollout_file_name(
+            canonical_archived_path.as_path(),
+            thread_id,
+            archived_path.as_path(),
+        )?;
+        let Some((year, month, day)) = rollout_date_parts(&file_name) else {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: format!(
+                    "rollout path `{}` missing filename timestamp",
+                    archived_path.display()
+                ),
+            });
+        };
+
+        let dest_dir = self
+            .config
+            .codex_home
+            .join(codex_rollout::SESSIONS_SUBDIR)
+            .join(year)
+            .join(month)
+            .join(day);
+        std::fs::create_dir_all(&dest_dir).map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to unarchive thread: {err}"),
+        })?;
+        let restored_path = dest_dir.join(&file_name);
+        std::fs::rename(&canonical_archived_path, &restored_path).map_err(|err| {
+            ThreadStoreError::Internal {
+                message: format!("failed to unarchive thread: {err}"),
+            }
+        })?;
+        touch_modified_time(restored_path.as_path()).map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to update unarchived thread timestamp: {err}"),
+        })?;
+
+        if let Some(ctx) = codex_rollout::state_db::get_state_db(&self.config).await {
+            let _ = ctx
+                .mark_unarchived(thread_id, restored_path.as_path())
+                .await;
+        }
+
+        let item = read_thread_item_from_rollout(restored_path.clone())
+            .await
+            .ok_or_else(|| ThreadStoreError::Internal {
+                message: format!(
+                    "failed to read unarchived thread {}",
+                    restored_path.display()
+                ),
+            })?;
+        stored_thread_from_rollout_item(
+            item,
+            /*archived*/ false,
+            self.config.model_provider_id.as_str(),
+        )
+        .ok_or_else(|| ThreadStoreError::Internal {
+            message: format!(
+                "failed to read unarchived thread id from {}",
+                restored_path.display()
+            ),
+        })
     }
 }
 
@@ -136,6 +296,71 @@ fn unsupported<T>(operation: &str) -> ThreadStoreResult<T> {
     Err(ThreadStoreError::Internal {
         message: format!("local thread store does not implement {operation} in this slice"),
     })
+}
+
+fn scoped_rollout_path(
+    root: PathBuf,
+    rollout_path: &Path,
+    root_name: &str,
+) -> ThreadStoreResult<PathBuf> {
+    let canonical_root =
+        std::fs::canonicalize(&root).map_err(|err| ThreadStoreError::Internal {
+            message: format!(
+                "failed to resolve {root_name} directory `{}`: {err}",
+                root.display()
+            ),
+        })?;
+    let canonical_rollout_path =
+        std::fs::canonicalize(rollout_path).map_err(|_| ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` must be in {root_name} directory",
+                rollout_path.display()
+            ),
+        })?;
+    if canonical_rollout_path.starts_with(&canonical_root) {
+        Ok(canonical_rollout_path)
+    } else {
+        Err(ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` must be in {root_name} directory",
+                rollout_path.display()
+            ),
+        })
+    }
+}
+
+fn matching_rollout_file_name(
+    rollout_path: &Path,
+    thread_id: codex_protocol::ThreadId,
+    display_path: &Path,
+) -> ThreadStoreResult<std::ffi::OsString> {
+    let Some(file_name) = rollout_path.file_name().map(OsStr::to_owned) else {
+        return Err(ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` missing file name",
+                display_path.display()
+            ),
+        });
+    };
+    let required_suffix = format!("{thread_id}.jsonl");
+    if file_name
+        .to_string_lossy()
+        .ends_with(required_suffix.as_str())
+    {
+        Ok(file_name)
+    } else {
+        Err(ThreadStoreError::InvalidRequest {
+            message: format!(
+                "rollout path `{}` does not match thread id {thread_id}",
+                display_path.display()
+            ),
+        })
+    }
+}
+
+fn touch_modified_time(path: &Path) -> std::io::Result<()> {
+    let times = FileTimes::new().set_modified(SystemTime::now());
+    OpenOptions::new().append(true).open(path)?.set_times(times)
 }
 
 async fn list_rollout_threads(
@@ -346,6 +571,223 @@ mod tests {
         });
         writeln!(file, "{user_event}")?;
         Ok(path)
+    }
+
+    #[tokio::test]
+    async fn archive_thread_moves_rollout_to_archived_collection() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()));
+        let uuid = Uuid::from_u128(201);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("archive thread");
+
+        assert!(!active_path.exists());
+        let archived_path = home
+            .path()
+            .join(ARCHIVED_SESSIONS_SUBDIR)
+            .join(active_path.file_name().expect("file name"));
+        assert!(archived_path.exists());
+
+        let archived = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                archived: true,
+                search_term: None,
+            })
+            .await
+            .expect("archived listing");
+        assert_eq!(archived.items.len(), 1);
+        assert_eq!(archived.items[0].thread_id, thread_id);
+        assert_eq!(archived.items[0].rollout_path, Some(archived_path));
+        assert_eq!(
+            archived.items[0].archived_at,
+            Some(archived.items[0].updated_at)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_archive_thread_resolves_rollout_before_complete() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()));
+        let uuid = Uuid::from_u128(205);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+
+        let prepared_archive = store
+            .prepare_archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("prepare archive");
+
+        assert!(active_path.exists());
+        prepared_archive.complete().await.expect("complete archive");
+        assert!(!active_path.exists());
+    }
+
+    #[tokio::test]
+    async fn prepare_archive_thread_fails_without_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()));
+        let uuid = Uuid::from_u128(206);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+
+        let err = store
+            .prepare_archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect_err("archive should fail without rollout");
+
+        let ThreadStoreError::InvalidRequest { message } = err else {
+            panic!("expected invalid request error");
+        };
+        assert_eq!(
+            message,
+            format!("no rollout found for thread id {thread_id}")
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_thread_updates_sqlite_metadata_when_present() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let store = LocalThreadStore::new(config.clone());
+        let uuid = Uuid::from_u128(202);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let active_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        runtime
+            .mark_backfill_complete(/*last_watermark*/ None)
+            .await
+            .expect("backfill should be complete");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            active_path.clone(),
+            Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.model_provider = Some(config.model_provider_id.clone());
+        builder.cwd = home.path().to_path_buf();
+        builder.cli_version = Some("test_version".to_string());
+        let metadata = builder.build(config.model_provider_id.as_str());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("archive thread");
+
+        let archived_path = home
+            .path()
+            .join(ARCHIVED_SESSIONS_SUBDIR)
+            .join(active_path.file_name().expect("file name"));
+        let updated = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("state db read should succeed")
+            .expect("thread metadata should exist");
+        assert_eq!(updated.rollout_path, archived_path);
+        assert!(updated.archived_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn unarchive_thread_restores_rollout_and_returns_updated_thread() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()));
+        let uuid = Uuid::from_u128(203);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let archived_path = write_archived_session_file(home.path(), "2025-01-03T13-00-00", uuid)
+            .expect("archived session file");
+
+        let thread = store
+            .unarchive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("unarchive thread");
+
+        assert!(!archived_path.exists());
+        let restored_path = home
+            .path()
+            .join("sessions/2025/01/03")
+            .join(archived_path.file_name().expect("file name"));
+        assert!(restored_path.exists());
+        assert_eq!(thread.thread_id, thread_id);
+        assert_eq!(thread.rollout_path, Some(restored_path));
+        assert_eq!(thread.archived_at, None);
+        assert_eq!(thread.preview, "Archived user message");
+        assert_eq!(
+            thread.first_user_message.as_deref(),
+            Some("Archived user message")
+        );
+    }
+
+    #[tokio::test]
+    async fn unarchive_thread_updates_sqlite_metadata_when_present() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let store = LocalThreadStore::new(config.clone());
+        let uuid = Uuid::from_u128(204);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let archived_path = write_archived_session_file(home.path(), "2025-01-03T13-00-00", uuid)
+            .expect("archived session file");
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        runtime
+            .mark_backfill_complete(/*last_watermark*/ None)
+            .await
+            .expect("backfill should be complete");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            archived_path.clone(),
+            Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.model_provider = Some(config.model_provider_id.clone());
+        builder.cwd = home.path().to_path_buf();
+        builder.cli_version = Some("test_version".to_string());
+        let mut metadata = builder.build(config.model_provider_id.as_str());
+        metadata.archived_at = Some(metadata.updated_at);
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+
+        store
+            .unarchive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("unarchive thread");
+
+        let restored_path = home
+            .path()
+            .join("sessions/2025/01/03")
+            .join(archived_path.file_name().expect("file name"));
+        let updated = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("state db read should succeed")
+            .expect("thread metadata should exist");
+        assert_eq!(updated.rollout_path, restored_path);
+        assert_eq!(updated.archived_at, None);
     }
 
     #[tokio::test]

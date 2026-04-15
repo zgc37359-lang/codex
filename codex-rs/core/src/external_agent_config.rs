@@ -354,6 +354,7 @@ impl ExternalAgentConfigService {
                     outcome
                         .succeeded_marketplaces
                         .push(marketplace_name.clone());
+                    // Installed marketplaces expose a stable manifest path under the install root.
                     add_marketplace_outcome
                         .installed_root
                         .join(INSTALLED_MARKETPLACE_MANIFEST_RELATIVE_PATH)

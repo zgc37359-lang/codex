@@ -10,6 +10,17 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## Status Bar HUD
+
+Codex CLI displays a rich status bar at the bottom of the terminal with real-time information:
+
+![Codex Status HUD](./.github/hud.png)
+
+- **Model & Reasoning** — Current model, reasoning effort level, service tier
+- **Session Info** — Thread ID, workspace, git status, MCP servers
+- **Context Usage** — Token count and context window utilization
+- **Activity** — Current command and execution state
+
 ## Quickstart
 
 ### Installing and running Codex CLI
